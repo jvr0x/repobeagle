@@ -107,6 +107,3 @@ Run `tests/run_tests.sh`, or `tests/run_tests.sh --offline` for the fixtures onl
 Static analysis can't prove a repo is safe.
 
 **False positives**: security tools and test suites can trigger credential and secret rules. Test and docs paths are downgraded, but YELLOW on big honest repos is normal.
-
-## v2 (planned)
-Dynamic execution in a disposable sandbox (gVisor/Firecracker): run the install inside it, watch file access and network attempts with honeypot secrets, and record the behaviour.
