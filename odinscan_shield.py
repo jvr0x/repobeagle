@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""repo-guard v1: static safety gate for untrusted repositories.
+"""odinscan-shield v1: static safety gate for untrusted repositories.
 
 NEVER executes repository code. Stdlib only (scanners are external binaries).
-  repo-guard scan <repo-url|local-path> [--strict|--balanced|--relaxed] [--keep]
+  odinscan-shield scan <repo-url|local-path> [--strict|--balanced|--relaxed] [--keep]
                   [--json out.json] [--no-docker] [--verify-deps] [--no-osv]
 """
 import argparse, json, os, re, shutil, subprocess, sys, tempfile, time, unicodedata
@@ -12,7 +12,7 @@ from pathlib import Path
 VERSION = "1.0.0"
 HERE = Path(__file__).resolve().parent
 RULES_DIR = HERE / "rules"
-IMAGE = os.environ.get("REPO_GUARD_IMAGE", "ghcr.io/jvr0x/repo-guard-local:latest")
+IMAGE = os.environ.get("OSHIELD_IMAGE", "ghcr.io/jvr0x/odinscan-shield:latest")
 SEV_ORDER = {"critical": 4, "high": 3, "medium": 2, "low": 1, "info": 0}
 MAX_FILE = 1_500_000
 SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "__pycache__", ".tox", "dist", "build", ".mypy_cache"}
@@ -425,7 +425,7 @@ def scan_semgrep(src, out):
         f = os.path.relpath(r["path"], src) if os.path.isabs(r["path"]) else r["path"]
         f = f[len(str(src)) + 1:] if f.startswith(str(src)) else f
         sev = sevmap.get(r["extra"].get("severity"), "low")
-        if re.search(r"(?i)(^|/)(tests?|testing|spec|__tests__|fixtures?|examples?|docs?)/", f) and sev == "high" and not r["check_id"].startswith("repo-guard"):
+        if re.search(r"(?i)(^|/)(tests?|testing|spec|__tests__|fixtures?|examples?|docs?)/", f) and sev == "high" and not r["check_id"].startswith("odinscan-shield"):
             sev = "medium"
         rid = r["check_id"].split(".")[-1]
         fs.append(finding("semgrep", sev, f, r["start"]["line"], rid, r["extra"].get("lines", ""), r["extra"].get("message", "")[:220]))
@@ -555,10 +555,14 @@ def verify_deps(src):
 # ----------------------------------------------------------------------------
 KEY_FILE_RE = re.compile(r"(?i)(^|/)(readme[^/]*|skill\.md|agents?\.md|claude\.md|package\.json|setup\.py|pyproject\.toml|.*mcp.*\.json|plugin\.json|Makefile|install\.sh|devcontainer\.json)$")
 
+def env(k, d=None):
+    """OSHIELD_* with legacy REPO_GUARD_* fallback."""
+    return os.environ.get("OSHIELD_" + k) or os.environ.get("REPO_GUARD_" + k) or d
+
 def ai_review(src, findings):
-    url = os.environ.get("REPO_GUARD_LLM_URL")
+    url = env("LLM_URL")
     if not url:
-        return None, "AI review skipped (set REPO_GUARD_LLM_URL to enable)"
+        return None, "AI review skipped (set OSHIELD_LLM_URL to enable; REPO_GUARD_LLM_URL also accepted)"
     url = url.rstrip("/")
     if not url.endswith("/chat/completions"):
         url += "/chat/completions" if url.endswith("/v1") else "/v1/chat/completions"
@@ -581,13 +585,13 @@ def ai_review(src, findings):
               "Reply ONLY with JSON: {\"intent\":\"benign|suspicious|malicious\",\"confidence\":0-1,\"summary\":\"<=3 sentences\",\"key_concerns\":[\"...\"]}")
     user = "SCANNER FINDINGS:\n" + json.dumps([{k: f[k] for k in ("tool", "severity", "file", "line", "title", "snippet")} for f in top], indent=0) + \
            "\n\nREPOSITORY FILES (untrusted):\n" + "\n\n".join(files)
-    body = {"model": os.environ.get("REPO_GUARD_LLM_MODEL", "local"), "temperature": 0,
+    body = {"model": env("LLM_MODEL", "local"), "temperature": 0,
             "messages": [{"role": "system", "content": sysmsg}, {"role": "user", "content": user}]}
     hdr = {"Content-Type": "application/json"}
-    if os.environ.get("REPO_GUARD_LLM_KEY"): hdr["Authorization"] = "Bearer " + os.environ["REPO_GUARD_LLM_KEY"]
+    if env("LLM_KEY"): hdr["Authorization"] = "Bearer " + env("LLM_KEY")
     try:
         req = urllib.request.Request(url, data=json.dumps(body).encode(), headers=hdr)
-        with urllib.request.urlopen(req, timeout=int(os.environ.get("REPO_GUARD_LLM_TIMEOUT", "300"))) as resp:
+        with urllib.request.urlopen(req, timeout=int(env("LLM_TIMEOUT", "300"))) as resp:
             content = json.loads(resp.read())["choices"][0]["message"]["content"]
         m = re.search(r"\{.*\}", content, re.S)
         j = json.loads(m.group(0)) if m else {"intent": "unknown", "summary": content[:500]}
@@ -609,12 +613,12 @@ def fetch(target, work):
                GIT_CONFIG_NOSYSTEM="1", GIT_ASKPASS="/bin/false", SSH_ASKPASS="/bin/false")
     G = ["git", "-c", "core.hooksPath=/dev/null", "-c", "core.symlinks=false", "-c", "core.fsmonitor=false",
          "-c", "protocol.file.allow=never", "-c", "credential.helper="]
-    tmo = int(os.environ.get("REPO_GUARD_CLONE_TIMEOUT", "1800"))
+    tmo = int(os.environ.get("OSHIELD_CLONE_TIMEOUT", "1800"))
     def git(args, cwd=None):
         try:
             r = subprocess.run(G + args, env=env, cwd=cwd, capture_output=True, text=True, timeout=tmo)
         except subprocess.TimeoutExpired:
-            raise SystemExit("git timed out (set REPO_GUARD_CLONE_TIMEOUT to raise the limit)")
+            raise SystemExit("git timed out (set OSHIELD_CLONE_TIMEOUT to raise the limit)")
         if r.returncode != 0:
             raise SystemExit("git failed: " + r.stderr.strip()[-400:])
         return r.stdout
@@ -645,7 +649,7 @@ def run_in_docker(src, out):
     os.chmod(out, 0o777)
     cmd = ["docker", "run", "--rm", "--network", "none", "--read-only", "--tmpfs", "/tmp:rw,exec,size=1g",
            "--user", f"{uid}:{gid}", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", "512",
-           "--memory", os.environ.get("REPO_GUARD_MEMORY", "6g"), "-e", "HOME=/tmp",
+           "--memory", os.environ.get("OSHIELD_MEMORY", "6g"), "-e", "HOME=/tmp",
            "-v", f"{src}:/src:ro", "-v", f"{out}:/out:rw", IMAGE, "/src", "/out"]
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
     try:
@@ -691,7 +695,7 @@ def report(meta, findings, v, why, counts, notes, ai, use_color, maxn=40):
     C = (lambda code, s: f"\033[{code}m{s}\033[0m") if use_color else (lambda code, s: s)
     vc = {"RED": "1;41;97", "YELLOW": "1;43;30", "GREEN": "1;42;30"}[v]
     sc = {"critical": "1;91", "high": "91", "medium": "93", "low": "96", "info": "37"}
-    print(C("1", f"\nrepo-guard {VERSION}  |  {meta['target']}"))
+    print(C("1", f"\nOdinScan Shield {VERSION}  |  {meta['target']}"))
     print(f"mode: {meta['mode']}   profile: {meta['profile']}   files: {meta['files']}   time: {meta['seconds']}s")
     print(f"tools: " + ", ".join(f"{k}({t['findings']}{'' if t['ok'] else ' !'})" for k, t in meta["tools"].items()))
     print("\n" + C(vc, f"  VERDICT: {v}  ") + "  " + why)
@@ -742,16 +746,16 @@ def dedupe(fs):
 def cmd_scan(a):
     t0 = time.time()
     profile = "strict" if a.strict else "relaxed" if a.relaxed else "balanced"
-    work = tempfile.mkdtemp(prefix="repo-guard-")
+    work = tempfile.mkdtemp(prefix="oshield-")
     os.chmod(work, 0o700)
     try:
-        print(f"[repo-guard] fetching {a.target} ...", file=sys.stderr)
+        print(f"[odinscan-shield] fetching {a.target} ...", file=sys.stderr)
         src, how = fetch(a.target, work)
         out = Path(work) / "out"; out.mkdir()
         use_docker = not a.no_docker and docker_ok()
         if not a.no_docker and not use_docker:
-            print(f"[repo-guard] docker image {IMAGE} not available -> local fallback (run ./install.sh, or ./install.sh --build-local)", file=sys.stderr)
-        print(f"[repo-guard] scanning ({'docker --network none' if use_docker else 'local'}) ...", file=sys.stderr)
+            print(f"[odinscan-shield] docker image {IMAGE} not available -> local fallback (run ./install.sh, or ./install.sh --build-local)", file=sys.stderr)
+        print(f"[odinscan-shield] scanning ({'docker --network none' if use_docker else 'local'}) ...", file=sys.stderr)
         res = run_in_docker(src, out) if use_docker else inner(src, out)
         findings, notes, tools = res["findings"], res["notes"], res["tools"]
         sk = Path(work) / "skipped.json"
@@ -782,9 +786,9 @@ def cmd_scan(a):
             Path(a.json).write_text(json.dumps({"version": VERSION, "verdict": v, "why": why, "counts": counts, "meta": meta,
                                                 "ai_review": ai, "findings": findings, "raw_findings_count": raw_count, "notes": notes,
                                                 "recommended_actions": ACTIONS[v]}, indent=2))
-            print(f"[repo-guard] JSON written to {a.json}", file=sys.stderr)
+            print(f"[odinscan-shield] JSON written to {a.json}", file=sys.stderr)
         if a.keep:
-            print(f"[repo-guard] kept clone at {src}", file=sys.stderr)
+            print(f"[odinscan-shield] kept clone at {src}", file=sys.stderr)
         return {"GREEN": 0, "YELLOW": 1, "RED": 2}[v]
     finally:
         if not a.keep:
@@ -793,7 +797,7 @@ def cmd_scan(a):
 def main():
     if len(sys.argv) >= 2 and sys.argv[1] == "_inner":
         inner(sys.argv[2], sys.argv[3]); return 0
-    ap = argparse.ArgumentParser(prog="repo-guard", description="Static safety gate for untrusted repos (never executes repo code).")
+    ap = argparse.ArgumentParser(prog="odinscan-shield", description="OdinScan Shield (odinscan.ai): Static safety gate for untrusted repos (never executes repo code).")
     sp = ap.add_subparsers(dest="cmd", required=True)
     s = sp.add_parser("scan", help="scan a git URL or local directory")
     s.add_argument("target")

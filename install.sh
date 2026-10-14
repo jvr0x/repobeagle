@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# repo-guard installer (idempotent).
-#   ./install.sh                 pull prebuilt image ghcr.io/jvr0x/repo-guard-local:latest + install wrapper
+# odinscan-shield installer (idempotent).
+#   ./install.sh                 pull prebuilt image ghcr.io/jvr0x/odinscan-shield:latest + install wrapper
 #   ./install.sh --build-local   build the image locally from this folder instead of pulling
 #   ./install.sh --local-tools   also install gitleaks/semgrep/guarddog on the host (for --no-docker fallback)
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-IMAGE="${REPO_GUARD_IMAGE:-ghcr.io/jvr0x/repo-guard-local:latest}"
-PREFIX="${REPO_GUARD_HOME:-$HOME/.local/share/repo-guard}"
-BIN="${REPO_GUARD_BIN:-$HOME/.local/bin}"
+IMAGE="${OSHIELD_IMAGE:-ghcr.io/jvr0x/odinscan-shield:latest}"
+PREFIX="${OSHIELD_HOME:-$HOME/.local/share/odinscan-shield}"
+BIN="${OSHIELD_BIN:-$HOME/.local/bin}"
 BUILD_LOCAL=0; LOCAL_TOOLS=0
 for a in "$@"; do case "$a" in --build-local) BUILD_LOCAL=1;; --local-tools) LOCAL_TOOLS=1;; *) echo "unknown option $a"; exit 1;; esac; done
-say(){ printf '\033[1;36m[repo-guard]\033[0m %s\n' "$*"; }
+say(){ printf '\033[1;36m[odinscan-shield]\033[0m %s\n' "$*"; }
 mkdir -p "$BIN" "$PREFIX"
 case "$(uname -m)" in
   aarch64|arm64) GL_ARCH=arm64; OSV_ARCH=arm64 ;;
@@ -54,13 +54,14 @@ if [[ $LOCAL_TOOLS == 1 ]]; then
 fi
 
 # 4) thin wrapper
-cat > "$BIN/repo-guard" <<WRAP
+cat > "$BIN/odinscan-shield" <<WRAP
 #!/usr/bin/env bash
-export REPO_GUARD_IMAGE="\${REPO_GUARD_IMAGE:-$IMAGE}"
+export OSHIELD_IMAGE="\${OSHIELD_IMAGE:-$IMAGE}"
 export PATH="$BIN:\$PATH"
-exec python3 "$HERE/repo_guard.py" "\$@"
+exec python3 "$HERE/odinscan_shield.py" "\$@"
 WRAP
-chmod +x "$BIN/repo-guard"
-say "installed $BIN/repo-guard (image: $IMAGE)"
+chmod +x "$BIN/odinscan-shield"
+ln -sf "$BIN/odinscan-shield" "$BIN/odinshield"
+say "installed $BIN/odinscan-shield (image: $IMAGE)"
 case ":$PATH:" in *":$BIN:"*) ;; *) say "add $BIN to your PATH";; esac
-say "try: repo-guard scan https://github.com/psf/requests"
+say "try: odinscan-shield scan https://github.com/psf/requests"

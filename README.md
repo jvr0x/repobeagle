@@ -1,4 +1,6 @@
-# repo-guard (local) v1
+# OdinScan Shield v1
+
+*A sub-brand of [odinscan.ai](https://odinscan.ai).* Run `odinscan-shield scan <url>`, or use the short alias `odinshield`. The wrapper adds every Docker hardening flag for you (`--rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges --user $(id -u):$(id -g) --tmpfs /tmp`, target mounted `:ro`), so you never type docker flags.
 
 A static safety check for untrusted repos, such as LLM-generated skills, plugins, MCP servers and "guides".
 You give it a git URL or a local folder and get a **GREEN / YELLOW / RED** verdict, with `file:line` evidence for each finding.
@@ -6,18 +8,18 @@ You give it a git URL or a local folder and get a **GREEN / YELLOW / RED** verdi
 **v1 never runs repo code.** It never runs installs or builds, and it never extracts archives.
 
 ## Install (DGX Spark / any Linux, arm64 or x86_64)
-The scanners ship as a prebuilt **private** multi-arch image, `ghcr.io/jvr0x/repo-guard-local` (linux/amd64 + linux/arm64). It's built by `.github/workflows/image.yml` on every push to main, weekly, and on manual dispatch. The tags are `latest`, `sha-<commit>` and the ISO week (e.g. `2026-W42`).
+The scanners ship as a prebuilt **private** multi-arch image, `ghcr.io/jvr0x/odinscan-shield` (linux/amd64 + linux/arm64). It's built by `.github/workflows/image.yml` on every push to main, weekly, and on manual dispatch. The tags are `latest`, `sha-<commit>` and the ISO week (e.g. `2026-W42`).
 ```bash
-unzip repo-guard-local.zip && cd repo-guard-local      # or: git clone the repo
+unzip odinscan-shield.zip && cd odinscan-shield      # or: git clone the repo
 echo <PAT with read:packages> | docker login ghcr.io -u jvr0x --password-stdin   # required: the image is private
-./install.sh                   # docker pull ghcr.io/jvr0x/repo-guard-local:latest + install the repo-guard wrapper
+./install.sh                   # docker pull ghcr.io/jvr0x/odinscan-shield:latest + install the odinscan-shield wrapper
 ./install.sh --build-local     # fallback: build the same image locally from the Dockerfile
 ./install.sh --local-tools     # also install gitleaks/semgrep/guarddog on the host for --no-docker
 ```
 `install.sh` is idempotent. It does the following:
 - Checks that Docker is available and pulls (or builds) the image.
 - Installs `osv-scanner`, which runs on the host because it needs network. Arch is detected from `uname -m`: aarch64 gets `linux_arm64`, x86_64 gets `linux_amd64`.
-- Writes a thin `~/.local/bin/repo-guard` wrapper.
+- Writes a thin `~/.local/bin/odinscan-shield` wrapper.
 
 If Docker isn't available, it installs the host tools automatically, and scans run with `--no-docker`.
 
@@ -26,11 +28,11 @@ How a scan is split up:
 - **Scan (container):** `docker run --rm --network none --read-only --cap-drop ALL`, non-root, with the clone mounted read-only.
 - **OSV (host):** lockfiles only.
 
-Set `REPO_GUARD_IMAGE` to use a different tag.
+Set `OSHIELD_IMAGE` to use a different tag.
 
 ## Usage
 ```bash
-repo-guard scan <git-url | local-dir> [--strict|--balanced|--relaxed] [--keep] [--json out.json]
+odinscan-shield scan <git-url | local-dir> [--strict|--balanced|--relaxed] [--keep] [--json out.json]
                 [--no-docker] [--no-osv] [--verify-deps] [--all] [--no-color]
 ```
 Exit code: 0 = GREEN, 1 = YELLOW, 2 = RED. Colour turns off when output isn't a terminal or `NO_COLOR` is set.
@@ -41,7 +43,7 @@ Exit code: 0 = GREEN, 1 = YELLOW, 2 = RED. Colour turns off when output isn't a 
 | balanced (default) | any critical | any medium or above |
 | relaxed | any critical | any high |
 
-To change the thresholds, edit `PROFILES` in `repo_guard.py`.
+To change the thresholds, edit `PROFILES` in `odinscan_shield.py`.
 
 ## Pipeline
 1. **Fetch** always uses a filtered checkout, so huge repos stay small. It runs `git clone --depth 1 --filter=blob:none --no-checkout --no-recurse-submodules`, lists files with `git ls-tree`, then does a sparse checkout that **excludes archives and binaries**. Those files are reported as findings but never downloaded. For example, DataDog's ~44 GB malware dataset comes down as ~250 MB in about 17 s. The checkout goes into a fresh temp dir (mode 0700), with these protections: `GIT_TERMINAL_PROMPT=0`, `core.hooksPath=/dev/null`, `core.symlinks=false`, `protocol.file.allow=never`, `GIT_ALLOW_PROTOCOL=https:http:ssh`, no credential helper, and LFS smudge skipped. A local directory is copied instead, without `.git`. The copy is deleted at the end unless you pass `--keep`.
@@ -60,7 +62,7 @@ To change the thresholds, edit `PROFILES` in `repo_guard.py`.
      - Prebuilt binaries, and archives. Archives are **never extracted**: zip headers are read to spot password-protected or encrypted samples, which are flagged as uninspectable.
 3. **OSV-Scanner** runs **on the host, outside the sandbox**, because the vulnerability DB is online. It only reads lockfiles and manifests from the clone and sends package names and versions to osv.dev. `--no-osv` skips it. (Offline mode `--offline-vulnerabilities --download-offline-databases` is a possible later improvement.) It also catches `MAL-` malicious-package advisories.
 4. **`--verify-deps`** (optional, host, network): GuardDog downloads each dependency from requirements.txt or package.json and statically scans it. Nothing is installed.
-5. **AI review** (optional): set `REPO_GUARD_LLM_URL` to an OpenAI-compatible endpoint, for example `http://spark1:8000/v1`. Optional extras are `REPO_GUARD_LLM_MODEL`, `REPO_GUARD_LLM_KEY` and `REPO_GUARD_LLM_TIMEOUT`.
+5. **AI review** (optional): set `OSHIELD_LLM_URL` (legacy `REPO_GUARD_LLM_URL` also accepted) to an OpenAI-compatible endpoint, for example `http://spark1:8000/v1`. Optional extras are `OSHIELD_LLM_MODEL`, `OSHIELD_LLM_KEY` and `OSHIELD_LLM_TIMEOUT`.
    - It sends key files (invisible characters rendered as `<U+XXXX>`) plus the top findings, and asks for an intent judgment.
    - The model can only **raise** the verdict: malicious with confidence ≥0.6 makes it RED, and suspicious turns GREEN into YELLOW.
    - If the variable is unset, this step is skipped cleanly.
@@ -69,7 +71,7 @@ Apart from the clone, OSV/GuardDog-verify and your own LLM endpoint, it makes no
 
 ## Example output (abridged)
 ```
-repo-guard 1.0.0  |  tests/fixtures/trap-npm
+odinscan-shield 1.0.0  |  tests/fixtures/trap-npm
   VERDICT: RED    2 critical / 2 high findings, e.g. npm lifecycle script 'postinstall' runs automatically on install (package.json:8)
   CRITICAL [agent-checks] package.json:8
            npm lifecycle script 'postinstall' runs automatically on install

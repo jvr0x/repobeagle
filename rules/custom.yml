@@ -1,5 +1,5 @@
 rules:
-  - id: repo-guard.python-exec-decoded-blob
+  - id: odinscan-shield.python-exec-decoded-blob
     languages: [python]
     severity: ERROR
     message: exec/eval of base64/zlib/marshal-decoded data (classic obfuscated payload)
@@ -9,7 +9,7 @@ rules:
       - pattern: exec(zlib.decompress(...))
       - pattern: exec(marshal.loads(...))
       - pattern: exec(codecs.decode(...))
-  - id: repo-guard.js-eval-decoded-blob
+  - id: odinscan-shield.js-eval-decoded-blob
     languages: [javascript, typescript]
     severity: ERROR
     message: eval/Function of base64-decoded data
@@ -18,7 +18,7 @@ rules:
       - pattern: eval(Buffer.from(..., "base64").toString(...))
       - pattern: new Function(Buffer.from(..., "base64").toString(...))
       - pattern: eval(Buffer.from(..., 'base64').toString())
-  - id: repo-guard.python-download-and-run
+  - id: odinscan-shield.python-download-and-run
     languages: [python]
     severity: ERROR
     message: downloads remote content and executes it
@@ -26,7 +26,7 @@ rules:
       - pattern: exec(urllib.request.urlopen(...).read(...))
       - pattern: exec(requests.get(...).text)
       - pattern: os.system("..." + $X)
-  - id: repo-guard.js-child-process-network-shell
+  - id: odinscan-shield.js-child-process-network-shell
     languages: [javascript, typescript]
     severity: WARNING
     message: child_process exec of a shell string (check for curl/wget/download-and-run)

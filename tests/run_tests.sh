@@ -2,7 +2,7 @@
 # Regression tests. Shallow clone only; nothing is executed or extracted.
 # Usage: tests/run_tests.sh [--offline]   (offline = local fixtures only)
 cd "$(dirname "$0")/.." || exit 1
-RG=./repo-guard; fail=0
+RG=./odinscan-shield; fail=0
 check(){ # target expected-verdicts(regex) [extra args]
   local t=$1 exp=$2; shift 2
   local j; j=$(mktemp)
