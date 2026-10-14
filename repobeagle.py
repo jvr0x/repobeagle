@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""repobeagle v1: static safety gate for untrusted repositories.
+"""repobeagle: static safety gate for untrusted repositories.
 
 NEVER executes repository code. Stdlib only (scanners are external binaries).
   repobeagle scan <repo-url|local-path> [--strict|--balanced|--relaxed] [--keep]

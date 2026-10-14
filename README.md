@@ -1,11 +1,11 @@
-# RepoBeagle v1
+# RepoBeagle
 
 *Sniffs out malicious repos before you trust them.* Run `repobeagle scan <url>`. Want it shorter? Add `alias beagle=repobeagle` to your shell; the installer does not create `beagle` because PackageBeagle already uses that name. The wrapper adds every Docker hardening flag for you (`--rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges --user $(id -u):$(id -g) --tmpfs /tmp`, target mounted `:ro`), so you never type docker flags.
 
 A static safety check for untrusted repos, such as LLM-generated skills, plugins, MCP servers and "guides".
 You give it a git URL or a local folder and get a **GREEN / YELLOW / RED** verdict, with `file:line` evidence for each finding.
 
-**v1 never runs repo code.** It never runs installs or builds, and it never extracts archives.
+**RepoBeagle never runs repo code.** It never runs installs or builds, and it never extracts archives.
 
 ## Install (DGX Spark / any Linux, arm64 or x86_64)
 The scanners ship as a prebuilt **private** multi-arch image, `ghcr.io/jvr0x/repobeagle` (linux/amd64 + linux/arm64). It's built by `.github/workflows/image.yml` on every push to main, weekly, and on manual dispatch. The tags are `latest`, `sha-<commit>` and the ISO week (e.g. `2026-W42`).
