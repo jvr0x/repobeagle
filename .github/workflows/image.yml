@@ -2,6 +2,7 @@ name: image
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   schedule:
     - cron: "17 4 * * 1"   # weekly (Mon 04:17 UTC): refresh scanners + rules
   workflow_dispatch:
@@ -38,6 +39,8 @@ jobs:
             type=raw,value=latest
             type=sha
             type=raw,value=${{ steps.date.outputs.week }}
+            type=ref,event=tag
+            type=raw,value=stable,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
       - uses: docker/build-push-action@v6
         with:
           context: .
