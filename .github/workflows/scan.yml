@@ -1,0 +1,160 @@
+# Reusable workflow: scan a repository with RepoBeagle and publish the verdict
+# as a badge + full report. Authors opt in with:
+#
+#   name: repobeagle
+#   on:
+#     push:
+#       branches: [main]
+#       tags: ["v*"]
+#   jobs:
+#     scan:
+#       permissions:
+#         contents: write   # publishes the badge branch (optional)
+#         statuses: write   # sets the repobeagle/scan commit status (optional)
+#       uses: jvr0x/repobeagle/.github/workflows/scan.yml@main
+#       with:
+#         profile: balanced   # strict | balanced | relaxed
+#         fail-on-red: false  # true = the job fails on a RED verdict (PR gate)
+#
+# The badge is self-attested: it lives in this repository and is only as
+# trustworthy as whoever controls the repo. See the README.
+name: repobeagle-scan
+on:
+  workflow_call:
+    inputs:
+      profile:
+        description: "Verdict profile: strict, balanced or relaxed"
+        required: false
+        default: "balanced"
+        type: string
+      fail-on-red:
+        description: "Fail the job when the verdict is RED"
+        required: false
+        default: false
+        type: boolean
+      badge-branch:
+        description: "Branch to publish badge.json and the report to (empty = do not publish)"
+        required: false
+        default: "repobeagle"
+        type: string
+      set-status:
+        description: "Set a repobeagle/scan commit status on the scanned commit"
+        required: false
+        default: true
+        type: boolean
+      tools-ref:
+        description: "repobeagle toolchain ref to run (the VERSION file there pins the image)"
+        required: false
+        default: "main"
+        type: string
+
+permissions:
+  contents: write
+  statuses: write
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0            # full sha so the commit status always resolves
+      - name: Check out the repobeagle toolchain
+        uses: actions/checkout@v4
+        with:
+          repository: jvr0x/repobeagle
+          ref: ${{ inputs.tools-ref }}
+          path: .repobeagle-tools
+
+      - name: Install repobeagle (pinned image + osv-scanner)
+        run: bash .repobeagle-tools/install.sh
+
+      - name: Scan
+        id: scan
+        run: |
+          set -e
+          mkdir -p .repobeagle-out
+          case "$PROFILE" in
+            strict)   S=--strict ;;
+            relaxed)  S=--relaxed ;;
+            *)        S=--balanced ;;
+          esac
+          set +e
+          python3 .repobeagle-tools/repobeagle.py scan . $S --json .repobeagle-out/beagle.json --no-color
+          rc=$?
+          set -e
+          if [ ! -s .repobeagle-out/beagle.json ] || [ "$rc" -gt 2 ]; then
+            echo "repobeagle scan crashed (rc=$rc), no report"
+            exit 1
+          fi
+          python3 -c 'import json;d=json.load(open(".repobeagle-out/beagle.json"));print("rc=%d" % ({"GREEN":0,"YELLOW":1,"RED":2}[d["verdict"]],));print("verdict=%s" % d["verdict"])' >> "$GITHUB_OUTPUT"
+          python3 -c 'import json;d=json.load(open(".repobeagle-out/beagle.json"));print("verdict:",d["verdict"],d["counts"])'
+        env:
+          PROFILE: ${{ inputs.profile }}
+
+      - name: Make badge
+        run: |
+          python3 .repobeagle-tools/tools/make_badge.py .repobeagle-out/beagle.json \
+            --endpoint .repobeagle-out/badge.json --svg .repobeagle-out/badge.svg \
+            --link "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/blob/$BADGE_BRANCH/report.json"
+        env:
+          BADGE_BRANCH: ${{ inputs.badge-branch }}
+
+      - name: Publish badge branch
+        if: inputs.badge-branch != ''
+        continue-on-error: true            # needs contents: write; degrades to a plain scan otherwise
+        run: |
+          set -euo pipefail
+          B="$BADGE_BRANCH"
+          W="$(mktemp -d)"
+          git -c init.defaultBranch=main init -q "$W"
+          git -C "$W" remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$W" config user.email "repobeagle[bot]@users.noreply.github.com"
+          git -C "$W" config user.name "repobeagle-badge"
+          if git -C "$W" ls-remote --exit-code --heads origin "$B" >/dev/null 2>&1; then
+            git -C "$W" fetch -q origin "$B"
+            git -C "$W" checkout -q FETCH_HEAD
+          else
+            git -C "$W" checkout -q --orphan "$B"
+          fi
+          cp .repobeagle-out/badge.json "$W/badge.json"
+          cp .repobeagle-out/badge.svg "$W/badge.svg"
+          cp .repobeagle-out/beagle.json "$W/report.json"
+          cp .repobeagle-out/beagle.json "$W/report-${GITHUB_SHA:0:7}.json"
+          if [ "$REF_TYPE" = "tag" ]; then
+            cp .repobeagle-out/badge.json "$W/badge-$REF_NAME.json"
+            cp .repobeagle-out/beagle.json "$W/report-$REF_NAME.json"
+          fi
+          git -C "$W" add -A
+          git -C "$W" commit -qm "repobeagle: $VERDICT for $GITHUB_SHA"
+          git -C "$W" push -q -f origin "HEAD:$B"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BADGE_BRANCH: ${{ inputs.badge-branch }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          VERDICT: ${{ steps.scan.outputs.verdict }}
+
+      - name: Set repobeagle/scan commit status
+        if: inputs.set-status
+        continue-on-error: true            # needs statuses: write; degrades gracefully
+        run: |
+          set -euo pipefail
+          read -r STATE DESC < <(python3 -c 'import json;d=json.load(open(".repobeagle-out/beagle.json"));c=d["counts"];v=d["verdict"];print({"GREEN":"success","YELLOW":"neutral","RED":"failure"}[v], "RepoBeagle: %s (%s critical / %s high)" % (v, c["critical"], c["high"]))')
+          if [ -n "$BADGE_BRANCH" ]; then
+            gh api "repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" \
+              -f state="$STATE" -f context="repobeagle/scan" -f description="$DESC" \
+              -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/blob/$BADGE_BRANCH/report.json"
+          else
+            gh api "repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" \
+              -f state="$STATE" -f context="repobeagle/scan" -f description="$DESC"
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BADGE_BRANCH: ${{ inputs.badge-branch }}
+
+      - name: Fail on RED
+        if: inputs.fail-on-red && steps.scan.outputs.rc == '2'
+        run: |
+          echo "RepoBeagle verdict is RED (see the repobeagle/scan status)"
+          exit 1

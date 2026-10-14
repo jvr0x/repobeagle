@@ -48,6 +48,39 @@ Exit code: 0 = GREEN, 1 = YELLOW, 2 = RED. Colour turns off when output isn't a 
 
 To change the thresholds, edit `PROFILES` in `repobeagle.py`.
 
+## Badge your repo
+
+Run the scanner on every push and show the verdict in your README. Add this workflow (it installs repobeagle, scans your repo with the pinned image, publishes the badge and sets a `repobeagle/scan` commit status):
+
+```yaml
+# .github/workflows/repobeagle.yml
+name: repobeagle
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+jobs:
+  scan:
+    permissions:
+      contents: write   # publishes the repobeagle badge branch (optional)
+      statuses: write   # sets the repobeagle/scan commit status (optional)
+    uses: jvr0x/repobeagle/.github/workflows/scan.yml@main
+    with:
+      profile: balanced   # strict | balanced | relaxed
+      fail-on-red: false  # true = the job fails on a RED verdict (PR gate)
+```
+
+Then add the badge; after a tag push, a per-tag badge also exists:
+
+```markdown
+![RepoBeagle](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/OWNER/REPO/repobeagle/badge.json)
+![RepoBeagle v1.0.0](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/OWNER/REPO/repobeagle/badge-v1.0.0.json)
+```
+
+The workflow publishes a `repobeagle` branch containing `badge.json` (shields.io endpoint), a self-hosted `badge.svg` fallback and the full `report.json` (plus `report-<sha>.json` per commit and per-tag copies), so every finding is one click away from the badge. Inputs: `profile`, `fail-on-red`, `badge-branch` (empty string disables publishing), `set-status` (default true) and `tools-ref` (toolchain ref, default `main`; the `VERSION` file there pins the scanned image).
+
+Honest caveat: this badge is self-attested. The files are published to your own repository, so it proves the author runs RepoBeagle and shows the last scan's verdict, not an independent audit.
+
 ## Pipeline
 1. **Fetch** always uses a filtered checkout, so huge repos stay small. It runs `git clone --depth 1 --filter=blob:none --no-checkout --no-recurse-submodules`, lists files with `git ls-tree`, then does a sparse checkout that **excludes archives and binaries**. Those files are reported as findings but never downloaded. For example, DataDog's ~44 GB malware dataset comes down as ~250 MB in about 17 s. The checkout goes into a fresh temp dir (mode 0700), with these protections: `GIT_TERMINAL_PROMPT=0`, `core.hooksPath=/dev/null`, `core.symlinks=false`, `protocol.file.allow=never`, `GIT_ALLOW_PROTOCOL=https:http:ssh`, no credential helper, and LFS smudge skipped. A local directory is copied instead, without `.git`. The copy is deleted at the end unless you pass `--keep`.
 2. **Offline scanners** run in `docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges --user <you, non-root>` with the clone mounted **read-only** and no home directory or credentials mounted. If Docker or the image is missing, or you pass `--no-docker`, they run locally on the temp folder.
