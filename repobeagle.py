@@ -3,7 +3,7 @@
 
 NEVER executes repository code. Stdlib only (scanners are external binaries).
   repobeagle scan <repo-url|local-path> [--strict|--balanced|--relaxed] [--keep]
-                  [--json out.json] [--no-docker] [--verify-deps] [--no-osv]
+                  [--json out.json] [--no-docker] [--verify-deps] [--no-osv] [--no-trust]
 """
 import argparse, json, os, re, shutil, subprocess, sys, tempfile, time, unicodedata
 import urllib.request
@@ -215,8 +215,13 @@ def check_patterns(root, p, text, findings):
                                     "Runs whatever a remote server returns, with no review." + (" (in docs: common but risky install pattern)" if is_doc else "")))
         if DECODE_EXEC.search(line):
             findings.append(finding("agent-checks", "high", r, i, "eval/exec of decoded blob", line, "Typical obfuscated-payload loader."))
-        if ext in CODE_EXT and re.search(r"[A-Za-z0-9+/]{400,}={0,2}", line):
-            findings.append(finding("agent-checks", "medium", r, i, "Large base64-like blob in source", line[:80] + "...", "Embedded encoded payloads are often used to hide malware."))
+        if ext in CODE_EXT:
+            blob = re.search(r"[\w+/=-]{400,}", line)
+            if blob and "data:" not in line and shannon(blob.group(0)) > 5.2:
+                findings.append(finding("agent-checks", "medium", r, i, f"high-entropy-blob: {len(blob.group(0))}-char encoded blob (entropy {shannon(blob.group(0)):.2f})",
+                                        line[:80] + "...", "Embedded high-entropy payloads are often used to hide malware."))
+            elif re.search(r"[A-Za-z0-9+/]{400,}={0,2}", line):
+                findings.append(finding("agent-checks", "medium", r, i, "Large base64-like blob in source", line[:80] + "...", "Embedded encoded payloads are often used to hide malware."))
 
 MCP_NAME_RE = re.compile(r"(?i)(^|/)(\.?mcp(_servers)?\.json|[^/]*\.mcp\.json|plugin\.json|[^/]*\.plugin\.json|marketplace\.json|claude_desktop_config\.json|"
                          r"\.claude/settings[^/]*\.json|\.cursor/mcp\.json|\.vscode/mcp\.json|\.codex/config\.toml|\.gemini/settings\.json|\.windsurf/mcp[^/]*\.json|hooks\.json)$")
@@ -313,6 +318,235 @@ def check_install_hooks(root, p, text, findings):
             if SENS_RE.search(line) and SINK_RE.search(line):
                 findings.append(finding("agent-checks", "high", r, i, "Makefile target touches secrets and network", line, "Running `make` would expose credentials."))
 
+# ----------------------------------------------------------------------------
+# Hidden markdown, build-time hooks, GitHub Actions, binaries/obfuscation, typosquats
+# ----------------------------------------------------------------------------
+MD_EXT = {".md", ".mdx", ".mdc", ".markdown"}
+AG_RE = r"(\bagents?\b|assistant|\bAI\b|LLM|ignore (all |any )?(previous|prior)|do not tell|upload|exfil|send (it|them|to)|curl |wget |\.ssh|\.env\b|\.aws|credentials|api[_ ]?key|token)"
+MD_RULES = [
+    ("md-details-instruction", re.compile(r"(?is)<details>((?:(?!</details>).){0,600}?(ignore (all |any )?previous|do not tell the user|upload|exfil|\.ssh|\.aws/credentials))(?:(?!</details>|<details>).){0,2000}</details>"),
+     "Collapsed <details> block carries agent instructions", "Collapsed by default when rendered, but read in full by agents."),
+    ("md-alt-title-instruction", re.compile(r"(?i)(!\[[^\]\n]{0,300}" + AG_RE + r"[^\]\n]{0,300}\]|(alt|title)=\"[^\"\n]{0,300}" + AG_RE + ")"),
+     "Image alt/title text carries agent instructions", "Alt/title text is rarely seen by humans but is read by agents."),
+    ("md-css-hidden", re.compile(r"(?i)<[a-z]+[^>\n]*style=\"[^\"]*(display:\s*none|visibility:\s*hidden|font-size:\s*0|opacity:\s*0[;\" ]|(left|top|text-indent):\s*-\d{3,}|color:\s*(#fff\b|#ffffff|white))"),
+     "CSS-hidden text in markdown", "Text styled to be invisible when rendered; agents still read it."),
+    ("md-padded-line", re.compile(r"\S.{0,200}[ \t\u00a0]{150,}\S"),
+     "Line padded with whitespace to push text off-screen", "Long runs of spaces hide trailing text past the visible edge of viewers."),
+]
+
+def check_markdown_hidden(root, p, text, findings):
+    if p.suffix.lower() not in MD_EXT:
+        return
+    r = rel(root, p)
+    clean = strip_invisible(text)
+    ln = lambda pos: clean[:pos].count("\n") + 1
+    # HTML comments in ALL markdown (agent files are already covered, stronger, by check_agent_text)
+    if not AGENT_FILE_RE.search(r):
+        for m in re.finditer(r"<!--(.*?)-->", clean, re.S):
+            body = m.group(1)[:600]
+            if len(body.strip()) > 15 and re.search(r"(?i)" + AG_RE, body):
+                findings.append(finding("agent-checks", "medium", r, ln(m.start()), "md-comment-instruction: hidden HTML comment with agent/exfil wording",
+                                        body.strip(), "Not visible when the markdown is rendered, but read by agents."))
+    for rule, rx, title, meaning in MD_RULES:
+        for m in rx.finditer(clean):
+            findings.append(finding("agent-checks", "medium", r, ln(m.start()), f"{rule}: {title}", m.group(0)[:200], meaning))
+            break
+
+BUILD_FETCH_RE = re.compile(r"(urllib|urlopen|requests\.(get|post)|http\.client|socket\.|subprocess|os\.system|os\.popen|pip\.main)")
+STD_BACKENDS = ("setuptools", "hatchling", "flit_core", "flit.", "poetry", "pdm", "maturin", "scikit_build", "mesonpy", "sipbuild", "pybind11", "whey", "uv_build")
+
+def check_build_hooks(root, p, text, findings):
+    r, name = rel(root, p), p.name
+    lines = text.split("\n")
+    def each(rx, sev, rule, title, meaning, once=False):
+        for i, line in enumerate(lines, 1):
+            if re.search(rx, line):
+                findings.append(finding("agent-checks", sev, r, i, f"{rule}: {title}", line, meaning))
+                if once: return
+    if name in ("setup.cfg", "build.py", "hatch_build.py") or re.match(r"_build.*\.py$", name):
+        each(BUILD_FETCH_RE, "high", "install-time-fetch", "build script runs commands / network at install time", "Runs during pip install/build of this source.")
+    elif name == "build.rs":
+        each(r"(Command::new|reqwest|ureq|TcpStream|curl|https?://)", "medium", "rust-build-rs", "Cargo build script runs commands / network", "build.rs executes on `cargo build` with your permissions.")
+    elif p.suffix == ".go":
+        each(r"^//go:generate .*(curl|wget|https?://|\bsh -c|bash)", "high", "go-generate-fetch", "go:generate downloads or runs a shell", "Runs on `go generate`; often wired into build instructions.")
+    elif p.suffix in (".gyp", ".gypi"):
+        each(r"['\"]actions?['\"]\s*:", "medium", "node-gyp-action", "node-gyp action runs a command at build", "Executed by node-gyp during `npm install` of native addons.", once=True)
+    elif name == "pyproject.toml":
+        m = re.search(r"(?m)^\s*build-backend\s*=\s*[\"']([^\"']+)", text)
+        if m and not m.group(1).startswith(STD_BACKENDS):
+            findings.append(finding("agent-checks", "medium", r, _line_of(text, m.group(0).strip()), "pip-build-hook: non-standard build backend", m.group(0),
+                                    "An unknown PEP 517 backend runs arbitrary code on pip install."))
+    elif name in ("Makefile", "GNUmakefile", "Justfile", "justfile") or name.endswith(".mk"):
+        each(r"(\bcurl\b|\bwget\b|base64|\beval\b|\bnc\b)", "low", "make-just-hooks", "Make/just target downloads, decodes or opens sockets", "Runs if you invoke make/just; review before building.", once=True)
+
+def check_workflows(root, p, text, findings):
+    r = rel(root, p)
+    if not re.search(r"(^|/)\.github/workflows/[^/]+\.ya?ml$", r):
+        return
+    lines = text.split("\n")
+    add = lambda sev, rule, title, i, snip, meaning: findings.append(finding("agent-checks", sev, r, i, f"{rule}: {title}", snip, meaning))
+    trig = re.search(r"(?m)^\s*(on:.*|-\s*)?\b(pull_request_target|workflow_run)\b", text)
+    if trig:
+        i = _line_of(text, trig.group(2))
+        head = re.search(r"github\.event\.(pull_request\.head|workflow_run\.head)|head\.(sha|ref)|refs/pull/", text)
+        if head:
+            add("high", "gha-pwn-request", "privileged trigger checks out untrusted PR code", _line_of(text, head.group(0)), head.group(0),
+                "pull_request_target/workflow_run runs with secrets + write token; checking out the PR head lets attackers run code with them.")
+        else:
+            add("medium", "gha-privileged-trigger", f"workflow uses {trig.group(2)}", i, trig.group(2), "Runs with repository secrets on events from forks; review carefully.")
+    unpinned = []
+    for i, line in enumerate(lines, 1):
+        if re.search(r"(echo|printf|cat)\b[^\n]*\$\{\{\s*secrets\.", line):
+            add("high", "gha-secret-echo", "secret printed in a workflow step", i, line, "Secrets written to logs or files can leak.")
+        if PIPE_SHELL.search(line):
+            add("medium", "gha-curl-pipe-shell", "workflow pipes a download into a shell", i, line, "CI runs whatever the remote server returns, with CI secrets available.")
+        if re.search(r"(write-all|^\s*(contents|actions|packages|pull-requests|id-token):\s*write)", line):
+            add("low", "gha-write-permissions", "workflow token has write permissions", i, line, "A compromised step can push code or publish packages.")
+        if re.search(r"^\s*-?\s*uses:\s*(?!\./|docker://)[^@\s]+@(?![0-9a-f]{40}\b)", line):
+            unpinned.append((i, line))
+    if unpinned:
+        add("low", "gha-unpinned-action", f"{len(unpinned)} action(s) on a tag/branch, not a commit SHA", unpinned[0][0], unpinned[0][1],
+            "Tags can be moved to malicious code (e.g. tj-actions/changed-files, 2025).")
+
+MAGIC = [(b"\x7fELF", "ELF executable"), (b"MZ", "Windows PE executable"), (b"\xcf\xfa\xed\xfe", "Mach-O binary"), (b"\xce\xfa\xed\xfe", "Mach-O binary"),
+         (b"\xca\xfe\xba\xbe", "Mach-O universal / Java class"), (b"\xfe\xed\xfa\xcf", "Mach-O binary")]
+
+def check_magic(root, p, findings):
+    """Executable content hidden behind a non-binary extension (e.g. an ELF named logo.png). Reads 4 bytes only."""
+    try:
+        with open(p, "rb") as fh: head = fh.read(4)
+    except OSError:
+        return False
+    for sig, kind in MAGIC:
+        if head.startswith(sig) and (sig != b"MZ" or p.suffix.lower() not in (".txt", ".md")):
+            findings.append(finding("agent-checks", "high", rel(root, p), 0, f"magic-mismatch: extension '{p.suffix or '(none)'}' hides a {kind}", kind,
+                                    "Executables disguised as images/data are a classic dropper trick."))
+            return True
+    return False
+
+def shannon(s):
+    from collections import Counter
+    from math import log2
+    n = len(s)
+    return -sum(c / n * log2(c / n) for c in Counter(s).values())
+
+DIST_RE = re.compile(r"(^|/)(dist|build|vendor|static|public|assets|out|lib/vendor)/|\.(min|bundle|umd)\.[cm]?js$")
+
+POPULAR = {
+    "npm": "react lodash express axios chalk commander debug moment request webpack typescript eslint mongoose prettier dotenv cross-env electron puppeteer nodemon jquery underscore".split(),
+    "pypi": "requests numpy pandas django flask urllib3 setuptools boto3 pyyaml cryptography pillow selenium colorama jinja2 pytest openai httpx pydantic fastapi aiohttp".split(),
+    "crates": "serde tokio regex reqwest anyhow chrono hyper".split(),
+}
+
+def _lev(a, b):
+    prev = list(range(len(b) + 1))
+    for i, x in enumerate(a, 1):
+        cur = [i]
+        for j, y in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[-1] + 1, prev[j - 1] + (x != y)))
+        prev = cur
+    return prev[-1]
+
+def typosquat_of(eco, name):
+    k = name.lower().replace("_", "-")
+    pop = POPULAR[eco]
+    if k in pop or k.startswith("@"):
+        return None
+    for t in pop:
+        if len(t) > 4 and 0 < _lev(k, t) <= 1 + (len(t) > 7):
+            return t
+        if (sorted(k) == sorted(t) and k != t) or k in (t + "-js", t + "js", t + "-py", "py" + t, "python-" + t, "node-" + t):
+            return t
+    return None
+
+def dep_names(p, text):
+    name = p.name
+    out = []
+    if name == "package.json":
+        try: data = json.loads(text)
+        except Exception: return "npm", []
+        for sec in ("dependencies", "devDependencies", "optionalDependencies", "peerDependencies"):
+            out += list((data.get(sec) or {}).keys())
+        return "npm", out
+    if name == "Cargo.toml":
+        on = False
+        for line in text.split("\n"):
+            if line.startswith("["): on = "dependencies" in line; continue
+            m = on and re.match(r"\s*([A-Za-z0-9_-]+)\s*=", line)
+            if m: out.append(m.group(1))
+        return "crates", out
+    if re.match(r"requirements.*\.txt$", name):
+        for line in text.split("\n"):
+            m = re.match(r"\s*([A-Za-z][\w.-]*)", line)
+            if m and not line.lstrip().startswith(("-", "#")): out.append(m.group(1))
+        return "pypi", out
+    if name == "pyproject.toml":
+        for m in re.finditer(r"""["']([A-Za-z][\w.-]*)\s*(\[[^\]]*\])?\s*([<>=!~;]|["'])""", text):
+            out.append(m.group(1))
+        return "pypi", out
+    return None, []
+
+def check_obfuscation_deps(root, p, text, findings):
+    r = rel(root, p)
+    if p.suffix.lower() in (".js", ".mjs", ".cjs") and not DIST_RE.search(r):
+        for i, line in enumerate(text.split("\n"), 1):
+            if len(line) > 3000 and line.count(" ") < len(line) / 40:
+                findings.append(finding("agent-checks", "low", r, i, "minified-outside-dist: minified code in a source path", line[:80] + "...",
+                                        "Minified code outside build output can't be reviewed; check it matches its source."))
+                break
+    eco, names = dep_names(p, text)
+    for n in dict.fromkeys(names):
+        t = typosquat_of(eco, n) if eco else None
+        if t:
+            findings.append(finding("agent-checks", "high", r, _line_of(text, n), f"typosquat-dep: {eco} '{n}' looks like '{t}'", n,
+                                    "Name is one edit away from a popular package: a common way to slip in malware. Check the registry page before installing."))
+
+# ----------------------------------------------------------------------------
+# Repo trust signals (host only, unauthenticated GitHub API; LOW/INFO only)
+# ----------------------------------------------------------------------------
+def trust_findings(requested, repo, owner, contributors, now=None):
+    import datetime as D
+    now = now or D.datetime.now(D.timezone.utc)
+    age = lambda s: (now - D.datetime.fromisoformat(s.replace("Z", "+00:00"))).days
+    ra, st = age(repo["created_at"]), repo.get("stargazers_count", 0)
+    oa = age(owner["created_at"]) if owner and owner.get("created_at") else None
+    T = lambda sev, rule, txt: finding("trust", sev, "(github)", 0, f"{rule}: {txt}", "", "Context signal only; never decides the verdict alone.")
+    fs = [T("info", "trust-signals", f"repo {ra}d old, {st} stars, {repo.get('forks_count', 0)} forks, {contributors} contributors, owner {oa if oa is not None else '?'}d old")]
+    if repo.get("full_name", requested).lower() != requested.lower():
+        fs.append(T("low", "repo-moved", f"{requested} now resolves to {repo['full_name']} (renamed or transferred)"))
+    if ra < 30: fs.append(T("low", "young-repo", f"repo created {ra} days ago"))
+    if oa is not None and oa < 90: fs.append(T("low", "young-owner", f"owner account {oa} days old"))
+    if st >= 500 and ra < 60: fs.append(T("low", "star-spike", f"{st} stars in {ra} days"))
+    if contributors <= 1 and st >= 200: fs.append(T("low", "single-contributor", f"{st} stars but one contributor"))
+    if repo.get("archived"): fs.append(T("info", "archived", "repo is archived"))
+    return fs
+
+def trust_signals(target):
+    m = re.match(r"^(?:https?://|git@|ssh://git@)github\.com[/:]([^/]+)/([^/#?]+?)(?:\.git)?/?$", target)
+    if not m:
+        return [], None
+    slug = f"{m.group(1)}/{m.group(2)}"
+    api = os.environ.get("BEAGLE_GITHUB_API", "https://api.github.com")
+    def get(path, want_headers=False):
+        req = urllib.request.Request(f"{api}/{path}", headers={"Accept": "application/vnd.github+json", "User-Agent": "repobeagle"})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            body = resp.read()
+            return (json.loads(body or b"null"), resp.headers) if want_headers else json.loads(body)
+    try:
+        repo = get(f"repos/{slug}")
+        try: owner = get(f"users/{repo['owner']['login']}")
+        except Exception: owner = None
+        contributors = 1
+        try:
+            data, hdr = get(f"repos/{slug}/contributors?per_page=1&anon=1", True)
+            lm = re.search(r'[?&]page=(\d+)>;\s*rel="last"', hdr.get("Link", "") or "")
+            contributors = int(lm.group(1)) if lm else len(data or [])
+        except Exception:
+            pass
+        return trust_findings(slug, repo, owner, contributors), None
+    except Exception as ex:
+        return [], f"trust signals skipped (GitHub API unavailable or rate-limited: {str(ex)[:80]})"
+
 BINARY_EXT = {".exe", ".dll", ".so", ".dylib", ".node", ".pyc", ".jar", ".whl", ".bin", ".scr", ".msi", ".deb", ".rpm", ".apk", ".dmg"}
 
 ARCHIVE_EXT = (".zip", ".7z", ".rar", ".tar", ".tar.gz", ".tgz", ".tar.xz", ".tar.bz2", ".gz", ".xz", ".bz2", ".zst")
@@ -350,10 +584,12 @@ def run_agent_checks(root):
                 findings.append(finding("agent-checks", "high", r, 0, "Password-protected/encrypted archive (uninspectable)", low,
                                         "Encrypted archives can't be scanned; this is how malware samples are shipped. Never extract on a real machine."))
             else:
-                findings.append(finding("agent-checks", "medium", r, 0, "Archive in repo (contents not scanned)", low, "v1 never extracts archives; review where it came from."))
+                findings.append(finding("agent-checks", "medium", r, 0, "Archive in repo (contents not scanned)", low, "Archives are never extracted; review where it came from."))
             continue
         if p.suffix.lower() in BINARY_EXT:
             findings.append(finding("agent-checks", "medium", r, 0, "Prebuilt binary/compiled artifact in repo", p.suffix, "Binaries can't be reviewed as source; verify where they came from."))
+            continue
+        if check_magic(root, p, findings):
             continue
         text = read_text(p)
         if text is None:
@@ -365,6 +601,10 @@ def run_agent_checks(root):
         check_mcp(root, p, text, findings)
         check_tool_poisoning(root, p, text, findings)
         check_install_hooks(root, p, text, findings)
+        check_markdown_hidden(root, p, text, findings)
+        check_build_hooks(root, p, text, findings)
+        check_workflows(root, p, text, findings)
+        check_obfuscation_deps(root, p, text, findings)
     return findings, nfiles
 
 # ----------------------------------------------------------------------------
@@ -686,7 +926,7 @@ ACTIONS = {
                "Install only in an isolated environment (container/VM/throwaway user) with no secrets present.",
                "Don't let an AI agent auto-run its install steps or MCP servers without reviewing them."],
     "GREEN": ["No red flags found by static analysis. Still pin versions and install in a venv/container.",
-              "Static scanning can't prove safety; v2 dynamic sandbox runs will add behavioral checks."],
+              "Static scanning can't prove safety; it does not observe runtime behavior."],
 }
 
 def color_enabled(): return sys.stdout.isatty() and not os.environ.get("NO_COLOR") and os.environ.get("TERM") != "dumb"
@@ -766,10 +1006,15 @@ def cmd_scan(a):
                 findings.append(finding("agent-checks", "high" if (arch and mal) else "medium", n, 0,
                     ("Archive (not downloaded; uninspectable, likely encrypted malware sample)" if mal else "Archive in repo (not downloaded/inspected)") if arch
                     else "Prebuilt binary/compiled artifact (not downloaded/inspected)", n,
-                    "v1 never downloads or extracts archives/binaries; their contents cannot be vetted."))
+                    "Archives/binaries are never downloaded or extracted; their contents cannot be vetted."))
         if not a.no_osv:
             t = time.time(); fs, note = scan_osv(src)
             findings += fs; tools["osv-scanner"] = {"findings": len(fs), "seconds": round(time.time() - t, 1), "ok": note is None}
+            if note: notes.append(note)
+        if not a.no_trust:
+            t = time.time(); fs, note = trust_signals(a.target)
+            findings += fs
+            if fs or note: tools["trust"] = {"findings": len(fs), "seconds": round(time.time() - t, 1), "ok": note is None}
             if note: notes.append(note)
         if a.verify_deps:
             fs, note = verify_deps(src); findings += fs
@@ -808,6 +1053,7 @@ def main():
     s.add_argument("--no-docker", action="store_true", help="run scanners locally instead of in the container")
     s.add_argument("--no-osv", action="store_true", help="skip OSV (avoids sending package names to osv.dev)")
     s.add_argument("--verify-deps", action="store_true", help="GuardDog-verify deps from requirements.txt/package.json (downloads packages, static only)")
+    s.add_argument("--no-trust", action="store_true", help="skip GitHub trust signals (unauthenticated public API)")
     s.add_argument("--all", action="store_true", help="print all findings")
     s.add_argument("--no-color", action="store_true")
     sp.add_parser("version")
