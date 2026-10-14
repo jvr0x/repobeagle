@@ -6,9 +6,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certifi
 RUN set -eux; a="$(uname -m)"; case "$a" in aarch64) g=arm64;; x86_64) g=x64;; *) exit 1;; esac; \
     curl -fsSL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_${g}.tar.gz" \
     | tar -xz -C /usr/local/bin gitleaks
-RUN pip install --no-cache-dir semgrep guarddog
+RUN pip install --no-cache-dir semgrep guarddog bandit
 COPY rules /opt/repobeagle/rules
 COPY repobeagle.py VERSION /opt/repobeagle/
+COPY THIRD-PARTY-NOTICES /opt/repobeagle/THIRD-PARTY-NOTICES
 ENV HOME=/tmp SEMGREP_ENABLE_VERSION_CHECK=0 SEMGREP_SEND_METRICS=off PYTHONDONTWRITEBYTECODE=1
 RUN useradd -u 10001 -m scanner
 USER 10001

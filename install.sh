@@ -2,7 +2,7 @@
 # repobeagle installer (idempotent).
 #   ./install.sh                 pull prebuilt image ghcr.io/jvr0x/repobeagle:<VERSION> + install wrapper
 #   ./install.sh --build-local   build the image locally from this folder instead of pulling
-#   ./install.sh --local-tools   also install gitleaks/semgrep/guarddog on the host (for --no-docker fallback)
+#   ./install.sh --local-tools   also install gitleaks/semgrep/guarddog/bandit on the host (for --no-docker fallback)
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VERSION="$(tr -d '[:space:]' < "$HERE/VERSION" 2>/dev/null || true)"; VERSION="${VERSION:-v1.0.0}"
@@ -47,11 +47,11 @@ if [[ $LOCAL_TOOLS == 1 ]]; then
     T="$(mktemp -d)"; curl -fsSL "https://github.com/gitleaks/gitleaks/releases/download/v$V/gitleaks_${V}_linux_${GL_ARCH}.tar.gz" | tar -xz -C "$T" gitleaks
     install -m 0755 "$T/gitleaks" "$BIN/gitleaks"; rm -rf "$T"
   fi
-  if [[ ! -x "$PREFIX/venv/bin/semgrep" || ! -x "$PREFIX/venv/bin/guarddog" ]]; then
-    say "installing semgrep + guarddog into $PREFIX/venv"
-    python3 -m venv "$PREFIX/venv"; "$PREFIX/venv/bin/pip" install -q --upgrade pip semgrep guarddog
+  if [[ ! -x "$PREFIX/venv/bin/semgrep" || ! -x "$PREFIX/venv/bin/guarddog" || ! -x "$PREFIX/venv/bin/bandit" ]]; then
+    say "installing semgrep + guarddog + bandit into $PREFIX/venv"
+    python3 -m venv "$PREFIX/venv"; "$PREFIX/venv/bin/pip" install -q --upgrade pip semgrep guarddog bandit
   fi
-  for t in semgrep guarddog; do command -v $t >/dev/null 2>&1 || ln -sf "$PREFIX/venv/bin/$t" "$BIN/$t"; done
+  for t in semgrep guarddog bandit; do command -v $t >/dev/null 2>&1 || ln -sf "$PREFIX/venv/bin/$t" "$BIN/$t"; done
 fi
 
 # 4) thin wrapper

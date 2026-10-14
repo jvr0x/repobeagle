@@ -716,11 +716,40 @@ def scan_guarddog(src, out):
         fs += got
     return fs, "; ".join(notes) or None
 
+def _int0(v):
+    try: return int(v)
+    except (TypeError, ValueError): return 0
+
+def scan_bandit(src, out):
+    src = Path(src)
+    if not any(src.rglob("*.py")):
+        return [], "bandit: no Python files (skipped)"
+    res = _run(["bandit", "-r", "-q", "-f", "json", str(src)], timeout=900)
+    if res is None: return [], "bandit not installed"
+    if res == "timeout": return [], "bandit timed out"
+    try:
+        data = json.loads(res.stdout)
+    except Exception:
+        return [], "bandit: unparsable output " + (res.stderr or "")[-200:]
+    sevmap = {"HIGH": "high", "MEDIUM": "medium", "LOW": "low"}
+    fs = []
+    for r in data.get("results") or []:
+        f = r.get("filename", "")
+        f = os.path.relpath(f, src) if os.path.isabs(f) else f
+        sev = sevmap.get((r.get("issue_severity") or "").upper(), "low")
+        if re.search(r"(?i)(^|/)(tests?|testing|spec|__tests__|fixtures?|examples?|docs?)/", f) and sev == "high":
+            sev = "medium"
+        tid = r.get("test_id") or "bandit"
+        title = re.sub(r"\s+", " ", f"Bandit {tid}: {r.get('test_name') or ''}".strip())
+        fs.append(finding("bandit", sev, f, _int0(r.get("line_number")), title,
+                          re.sub(r"\s+", " ", (r.get("code") or "")).strip()[:160], r.get("issue_text") or ""))
+    return fs, None
+
 def inner(src, out):
     """Runs offline scanners + agent checks. Used inside the container or locally."""
     out = Path(out); out.mkdir(parents=True, exist_ok=True)
     result = {"findings": [], "notes": [], "tools": {}}
-    for name, fn in (("gitleaks", scan_gitleaks), ("semgrep", scan_semgrep), ("guarddog", scan_guarddog)):
+    for name, fn in (("gitleaks", scan_gitleaks), ("semgrep", scan_semgrep), ("guarddog", scan_guarddog), ("bandit", scan_bandit)):
         t = time.time()
         try:
             fs, note = fn(src, out)

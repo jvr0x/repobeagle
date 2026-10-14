@@ -40,3 +40,98 @@ rules:
       - metavariable-regex:
           metavariable: $CMD
           regex: (?i).*(curl|wget|bash|powershell|\|\s*sh).*
+
+  # ---------------------------------------------------------------------------
+  # RepoBeagle own rules (Apache-2.0, same as this repo).
+  # Ideas re-expressed from permissive upstreams; all patterns are our own:
+  #   C functions   - CWE-242 / CWE-676 / CWE-362 (facts)
+  #   Go checks     - gosec audit classes (Apache-2.0) https://github.com/securego/gosec
+  #   Dockerfile    - hadolint DL3002 (reference only) https://github.com/hadolint/hadolint/wiki/DL3002
+  # ---------------------------------------------------------------------------
+  - id: repobeagle.c-gets
+    languages: [c]
+    severity: ERROR
+    message: gets() has no bounds checking and cannot be used safely (CWE-242)
+    pattern: gets($X)
+  - id: repobeagle.c-unbounded-string-copy
+    languages: [c]
+    severity: ERROR
+    message: unbounded strcpy/strcat can overflow the destination buffer (CWE-676)
+    pattern-either:
+      - pattern: strcpy($DST, $SRC)
+      - pattern: strcat($DST, $SRC)
+  - id: repobeagle.c-sprintf
+    languages: [c]
+    severity: WARNING
+    message: sprintf/vsprintf does not bound its output; prefer snprintf (CWE-676)
+    pattern-either:
+      - pattern: sprintf($DST, ...)
+      - pattern: vsprintf($DST, ...)
+  - id: repobeagle.c-strtok
+    languages: [c]
+    severity: WARNING
+    message: strtok is not thread-safe and mutates its input; prefer strtok_r (CWE-362)
+    pattern: strtok($X, $Y)
+  - id: repobeagle.go-weak-crypto
+    languages: [go]
+    severity: WARNING
+    message: weak/broken crypto primitive (md5, sha1, rc4, des) (CWE-327)
+    pattern-either:
+      - pattern: md5.New(...)
+      - pattern: md5.Sum(...)
+      - pattern: sha1.New(...)
+      - pattern: sha1.Sum(...)
+      - pattern: rc4.NewCipher(...)
+      - pattern: des.NewCipher(...)
+      - pattern: des.NewTripleDESCipher(...)
+  - id: repobeagle.go-mathrand-in-crypto
+    languages: [go]
+    severity: WARNING
+    message: math/rand is predictable; use crypto/rand for security-sensitive values (CWE-338)
+    pattern-either:
+      - pattern: rand.Intn(...)
+      - pattern: rand.Int31(...)
+      - pattern: rand.Int63(...)
+      - pattern: rand.Float64(...)
+  - id: repobeagle.go-insecure-tls
+    languages: [go]
+    severity: ERROR
+    message: TLS transport security disabled or downgraded (InsecureSkipVerify / MinVersion <= 1.1 / SSLv3) (CWE-295, CWE-319)
+    pattern-either:
+      - pattern: 'tls.Config{..., InsecureSkipVerify: true, ...}'
+      - pattern: 'tls.Config{..., MinVersion: tls.VersionTLS10, ...}'
+      - pattern: 'tls.Config{..., MinVersion: tls.VersionTLS11, ...}'
+      - pattern: 'tls.Config{..., MinVersion: tls.VersionSSL30, ...}'
+  - id: repobeagle.go-ssh-ignore-host-key
+    languages: [go]
+    severity: ERROR
+    message: ssh.InsecureIgnoreHostKey() disables host key verification (MITM risk) (CWE-295)
+    pattern: ssh.InsecureIgnoreHostKey()
+  - id: repobeagle.go-jwt-hardcoded-key
+    languages: [go]
+    severity: ERROR
+    message: JWT signed with a hardcoded secret (CWE-798)
+    pattern: jwt.NewWithClaims(..., []byte("..."))
+  - id: repobeagle.go-sql-concat
+    languages: [go]
+    severity: ERROR
+    message: SQL query built by string concatenation is injection-prone; use parameters (CWE-89)
+    pattern-either:
+      - pattern: $DB.Query("..." + $X, ...)
+      - pattern: $DB.Exec("..." + $X, ...)
+  - id: repobeagle.dockerfile-last-user-root
+    languages: [dockerfile]
+    severity: ERROR
+    message: last USER is root; container processes would run with root privileges (CWE-269)
+    patterns:
+      - pattern: USER root
+      - pattern-not-inside:
+          patterns:
+            - pattern: |
+                USER root
+                ...
+                USER $X
+            - metavariable-pattern:
+                metavariable: $X
+                patterns:
+                  - pattern-not: root
