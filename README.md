@@ -1,5 +1,7 @@
 # RepoBeagle
 
+![RepoBeagle: sniff your repos before you clone them](assets/banner.png)
+
 *Sniffs out malicious repos before you trust them.* Run `repobeagle scan <url>`. Want it shorter? Add `alias beagle=repobeagle` to your shell; the installer does not create `beagle` because PackageBeagle already uses that name. The wrapper adds every Docker hardening flag for you (`--rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges --user $(id -u):$(id -g) --tmpfs /tmp`, target mounted `:ro`), so you never type docker flags.
 
 A static safety check for untrusted repos, such as LLM-generated skills, plugins, MCP servers and "guides".
