@@ -1,4 +1,4 @@
-# beagle-scanner: offline scanning image. Multi-arch (amd64/arm64).
+# repobeagle-scanner: offline scanning image. Multi-arch (amd64/arm64).
 FROM python:3.12-slim
 ARG GITLEAKS_VERSION=8.30.1
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates git \

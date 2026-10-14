@@ -1,6 +1,6 @@
 # RepoBeagle v1
 
-*Sniffs out malicious repos before you trust them.* Run `beagle scan <url>`, or use the short alias `repobeagle`. The wrapper adds every Docker hardening flag for you (`--rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges --user $(id -u):$(id -g) --tmpfs /tmp`, target mounted `:ro`), so you never type docker flags.
+*Sniffs out malicious repos before you trust them.* Run `repobeagle scan <url>`. Want it shorter? Add `alias beagle=repobeagle` to your shell; the installer does not create `beagle` because PackageBeagle already uses that name. The wrapper adds every Docker hardening flag for you (`--rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges --user $(id -u):$(id -g) --tmpfs /tmp`, target mounted `:ro`), so you never type docker flags.
 
 A static safety check for untrusted repos, such as LLM-generated skills, plugins, MCP servers and "guides".
 You give it a git URL or a local folder and get a **GREEN / YELLOW / RED** verdict, with `file:line` evidence for each finding.
@@ -10,16 +10,16 @@ You give it a git URL or a local folder and get a **GREEN / YELLOW / RED** verdi
 ## Install (DGX Spark / any Linux, arm64 or x86_64)
 The scanners ship as a prebuilt **private** multi-arch image, `ghcr.io/jvr0x/repobeagle` (linux/amd64 + linux/arm64). It's built by `.github/workflows/image.yml` on every push to main, weekly, and on manual dispatch. The tags are `latest`, `sha-<commit>` and the ISO week (e.g. `2026-W42`).
 ```bash
-unzip beagle.zip && cd beagle      # or: git clone the repo
+git clone https://github.com/jvr0x/repobeagle && cd repobeagle
 echo <PAT with read:packages> | docker login ghcr.io -u jvr0x --password-stdin   # required: the image is private
-./install.sh                   # docker pull ghcr.io/jvr0x/repobeagle:latest + install the beagle wrapper
+./install.sh                   # docker pull ghcr.io/jvr0x/repobeagle:latest + install the repobeagle wrapper
 ./install.sh --build-local     # fallback: build the same image locally from the Dockerfile
 ./install.sh --local-tools     # also install gitleaks/semgrep/guarddog on the host for --no-docker
 ```
 `install.sh` is idempotent. It does the following:
 - Checks that Docker is available and pulls (or builds) the image.
 - Installs `osv-scanner`, which runs on the host because it needs network. Arch is detected from `uname -m`: aarch64 gets `linux_arm64`, x86_64 gets `linux_amd64`.
-- Writes a thin `~/.local/bin/beagle` wrapper.
+- Writes a thin `~/.local/bin/repobeagle` wrapper.
 
 If Docker isn't available, it installs the host tools automatically, and scans run with `--no-docker`.
 
@@ -32,7 +32,7 @@ Set `BEAGLE_IMAGE` to use a different tag.
 
 ## Usage
 ```bash
-beagle scan <git-url | local-dir> [--strict|--balanced|--relaxed] [--keep] [--json out.json]
+repobeagle scan <git-url | local-dir> [--strict|--balanced|--relaxed] [--keep] [--json out.json]
                 [--no-docker] [--no-osv] [--verify-deps] [--all] [--no-color]
 ```
 Exit code: 0 = GREEN, 1 = YELLOW, 2 = RED. Colour turns off when output isn't a terminal or `NO_COLOR` is set.
@@ -71,7 +71,7 @@ Apart from the clone, OSV/GuardDog-verify and your own LLM endpoint, it makes no
 
 ## Example output (abridged)
 ```
-beagle 1.0.0  |  tests/fixtures/trap-npm
+repobeagle 1.0.0  |  tests/fixtures/trap-npm
   VERDICT: RED    2 critical / 2 high findings, e.g. npm lifecycle script 'postinstall' runs automatically on install (package.json:8)
   CRITICAL [agent-checks] package.json:8
            npm lifecycle script 'postinstall' runs automatically on install

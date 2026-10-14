@@ -1,1 +1,4 @@
-beagle
+#!/usr/bin/env bash
+SELF="$(readlink -f "${BASH_SOURCE[0]}")"
+export PATH="$HOME/.local/bin:$PATH"
+exec python3 "$(dirname "$SELF")/repobeagle.py" "$@"

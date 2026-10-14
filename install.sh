@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# beagle installer (idempotent).
+# repobeagle installer (idempotent).
 #   ./install.sh                 pull prebuilt image ghcr.io/jvr0x/repobeagle:latest + install wrapper
 #   ./install.sh --build-local   build the image locally from this folder instead of pulling
 #   ./install.sh --local-tools   also install gitleaks/semgrep/guarddog on the host (for --no-docker fallback)
@@ -10,7 +10,7 @@ PREFIX="${BEAGLE_HOME:-$HOME/.local/share/repobeagle}"
 BIN="${BEAGLE_BIN:-$HOME/.local/bin}"
 BUILD_LOCAL=0; LOCAL_TOOLS=0
 for a in "$@"; do case "$a" in --build-local) BUILD_LOCAL=1;; --local-tools) LOCAL_TOOLS=1;; *) echo "unknown option $a"; exit 1;; esac; done
-say(){ printf '\033[1;36m[beagle]\033[0m %s\n' "$*"; }
+say(){ printf '\033[1;36m[repobeagle]\033[0m %s\n' "$*"; }
 mkdir -p "$BIN" "$PREFIX"
 case "$(uname -m)" in
   aarch64|arm64) GL_ARCH=arm64; OSV_ARCH=arm64 ;;
@@ -54,14 +54,14 @@ if [[ $LOCAL_TOOLS == 1 ]]; then
 fi
 
 # 4) thin wrapper
-cat > "$BIN/beagle" <<WRAP
+cat > "$BIN/repobeagle" <<WRAP
 #!/usr/bin/env bash
 export BEAGLE_IMAGE="\${BEAGLE_IMAGE:-$IMAGE}"
 export PATH="$BIN:\$PATH"
 exec python3 "$HERE/repobeagle.py" "\$@"
 WRAP
-chmod +x "$BIN/beagle"
-ln -sf "$BIN/beagle" "$BIN/repobeagle"
-say "installed $BIN/beagle (image: $IMAGE)"
+chmod +x "$BIN/repobeagle"
+grep -qs repobeagle.py "$BIN/beagle" && rm -f "$BIN/beagle"  # remove only our old wrapper
+say "installed $BIN/repobeagle (image: $IMAGE)"
 case ":$PATH:" in *":$BIN:"*) ;; *) say "add $BIN to your PATH";; esac
-say "try: beagle scan https://github.com/psf/requests"
+say "try: repobeagle scan https://github.com/psf/requests"

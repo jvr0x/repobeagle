@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""beagle v1: static safety gate for untrusted repositories.
+"""repobeagle v1: static safety gate for untrusted repositories.
 
 NEVER executes repository code. Stdlib only (scanners are external binaries).
-  beagle scan <repo-url|local-path> [--strict|--balanced|--relaxed] [--keep]
+  repobeagle scan <repo-url|local-path> [--strict|--balanced|--relaxed] [--keep]
                   [--json out.json] [--no-docker] [--verify-deps] [--no-osv]
 """
 import argparse, json, os, re, shutil, subprocess, sys, tempfile, time, unicodedata
@@ -746,16 +746,16 @@ def dedupe(fs):
 def cmd_scan(a):
     t0 = time.time()
     profile = "strict" if a.strict else "relaxed" if a.relaxed else "balanced"
-    work = tempfile.mkdtemp(prefix="beagle-")
+    work = tempfile.mkdtemp(prefix="repobeagle-")
     os.chmod(work, 0o700)
     try:
-        print(f"[beagle] fetching {a.target} ...", file=sys.stderr)
+        print(f"[repobeagle] fetching {a.target} ...", file=sys.stderr)
         src, how = fetch(a.target, work)
         out = Path(work) / "out"; out.mkdir()
         use_docker = not a.no_docker and docker_ok()
         if not a.no_docker and not use_docker:
-            print(f"[beagle] docker image {IMAGE} not available -> local fallback (run ./install.sh, or ./install.sh --build-local)", file=sys.stderr)
-        print(f"[beagle] scanning ({'docker --network none' if use_docker else 'local'}) ...", file=sys.stderr)
+            print(f"[repobeagle] docker image {IMAGE} not available -> local fallback (run ./install.sh, or ./install.sh --build-local)", file=sys.stderr)
+        print(f"[repobeagle] scanning ({'docker --network none' if use_docker else 'local'}) ...", file=sys.stderr)
         res = run_in_docker(src, out) if use_docker else inner(src, out)
         findings, notes, tools = res["findings"], res["notes"], res["tools"]
         sk = Path(work) / "skipped.json"
@@ -786,9 +786,9 @@ def cmd_scan(a):
             Path(a.json).write_text(json.dumps({"version": VERSION, "verdict": v, "why": why, "counts": counts, "meta": meta,
                                                 "ai_review": ai, "findings": findings, "raw_findings_count": raw_count, "notes": notes,
                                                 "recommended_actions": ACTIONS[v]}, indent=2))
-            print(f"[beagle] JSON written to {a.json}", file=sys.stderr)
+            print(f"[repobeagle] JSON written to {a.json}", file=sys.stderr)
         if a.keep:
-            print(f"[beagle] kept clone at {src}", file=sys.stderr)
+            print(f"[repobeagle] kept clone at {src}", file=sys.stderr)
         return {"GREEN": 0, "YELLOW": 1, "RED": 2}[v]
     finally:
         if not a.keep:
@@ -797,7 +797,7 @@ def cmd_scan(a):
 def main():
     if len(sys.argv) >= 2 and sys.argv[1] == "_inner":
         inner(sys.argv[2], sys.argv[3]); return 0
-    ap = argparse.ArgumentParser(prog="beagle", description="RepoBeagle: Static safety gate for untrusted repos (never executes repo code).")
+    ap = argparse.ArgumentParser(prog="repobeagle", description="RepoBeagle: Static safety gate for untrusted repos (never executes repo code).")
     sp = ap.add_subparsers(dest="cmd", required=True)
     s = sp.add_parser("scan", help="scan a git URL or local directory")
     s.add_argument("target")
