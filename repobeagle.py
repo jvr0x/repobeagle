@@ -9,10 +9,17 @@ import argparse, json, os, re, shutil, subprocess, sys, tempfile, time, unicoded
 import urllib.request
 from pathlib import Path
 
-VERSION = "1.0.0"
 HERE = Path(__file__).resolve().parent
 RULES_DIR = HERE / "rules"
-IMAGE = os.environ.get("BEAGLE_IMAGE", "ghcr.io/jvr0x/repobeagle:latest")
+def _read_version():
+    """Single source of truth: the VERSION file (also read by install.sh)."""
+    try:
+        return (HERE / "VERSION").read_text().strip() or "v1.0.0"
+    except OSError:
+        return "v1.0.0"
+RELEASE = _read_version()                 # e.g. v1.0.0 (image tag)
+VERSION = RELEASE.lstrip("v")             # e.g. 1.0.0 (display / JSON)
+IMAGE = os.environ.get("BEAGLE_IMAGE", f"ghcr.io/jvr0x/repobeagle:{RELEASE}")
 SEV_ORDER = {"critical": 4, "high": 3, "medium": 2, "low": 1, "info": 0}
 MAX_FILE = 1_500_000
 SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "__pycache__", ".tox", "dist", "build", ".mypy_cache"}
@@ -978,12 +985,34 @@ def dedupe(fs):
         seen.add(k); out.append(f)
     return out
 
+_WORKDIRS = set()
+
+def _cleanup_workdirs():
+    for w in list(_WORKDIRS):
+        shutil.rmtree(w, ignore_errors=True)
+        _WORKDIRS.discard(w)
+
+def _on_signal(signum, frame):
+    _cleanup_workdirs()
+    raise SystemExit(128 + signum)
+
+def _install_cleanup():
+    import atexit, signal
+    atexit.register(_cleanup_workdirs)
+    for sig in (signal.SIGINT, signal.SIGTERM, getattr(signal, "SIGHUP", None)):
+        if sig is not None:
+            try: signal.signal(sig, _on_signal)
+            except (ValueError, OSError): pass   # not in main thread
+
 def cmd_scan(a):
     t0 = time.time()
     profile = "strict" if a.strict else "relaxed" if a.relaxed else "balanced"
-    work = tempfile.mkdtemp(prefix="repobeagle-")
-    os.chmod(work, 0o700)
+    work = None
     try:
+        work = tempfile.mkdtemp(prefix="repobeagle-")
+        if not a.keep:
+            _WORKDIRS.add(work)          # atexit / signal handlers remove it on any exit path
+        os.chmod(work, 0o700)
         print(f"[repobeagle] fetching {a.target} ...", file=sys.stderr)
         src, how = fetch(a.target, work)
         out = Path(work) / "out"; out.mkdir()
@@ -1031,8 +1060,9 @@ def cmd_scan(a):
             print(f"[repobeagle] kept clone at {src}", file=sys.stderr)
         return {"GREEN": 0, "YELLOW": 1, "RED": 2}[v]
     finally:
-        if not a.keep:
+        if work and not a.keep:
             shutil.rmtree(work, ignore_errors=True)
+            _WORKDIRS.discard(work)
 
 def main():
     if len(sys.argv) >= 2 and sys.argv[1] == "_inner":
@@ -1055,6 +1085,7 @@ def main():
     a = ap.parse_args()
     if a.cmd == "version":
         print(VERSION); return 0
+    _install_cleanup()
     return cmd_scan(a)
 
 if __name__ == "__main__":

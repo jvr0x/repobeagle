@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # repobeagle installer (idempotent).
-#   ./install.sh                 pull prebuilt image ghcr.io/jvr0x/repobeagle:latest + install wrapper
+#   ./install.sh                 pull prebuilt image ghcr.io/jvr0x/repobeagle:<VERSION> + install wrapper
 #   ./install.sh --build-local   build the image locally from this folder instead of pulling
 #   ./install.sh --local-tools   also install gitleaks/semgrep/guarddog on the host (for --no-docker fallback)
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-IMAGE="${BEAGLE_IMAGE:-ghcr.io/jvr0x/repobeagle:latest}"
+VERSION="$(tr -d '[:space:]' < "$HERE/VERSION" 2>/dev/null || true)"; VERSION="${VERSION:-v1.0.0}"
+IMAGE="${BEAGLE_IMAGE:-ghcr.io/jvr0x/repobeagle:$VERSION}"
 PREFIX="${BEAGLE_HOME:-$HOME/.local/share/repobeagle}"
 BIN="${BEAGLE_BIN:-$HOME/.local/bin}"
 BUILD_LOCAL=0; LOCAL_TOOLS=0

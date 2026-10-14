@@ -8,7 +8,7 @@ RUN set -eux; a="$(uname -m)"; case "$a" in aarch64) g=arm64;; x86_64) g=x64;; *
     | tar -xz -C /usr/local/bin gitleaks
 RUN pip install --no-cache-dir semgrep guarddog
 COPY rules /opt/repobeagle/rules
-COPY repobeagle.py /opt/repobeagle/repobeagle.py
+COPY repobeagle.py VERSION /opt/repobeagle/
 ENV HOME=/tmp SEMGREP_ENABLE_VERSION_CHECK=0 SEMGREP_SEND_METRICS=off PYTHONDONTWRITEBYTECODE=1
 RUN useradd -u 10001 -m scanner
 USER 10001

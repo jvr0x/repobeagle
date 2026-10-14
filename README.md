@@ -12,10 +12,10 @@ You give it a git URL or a local folder and get a **GREEN / YELLOW / RED** verdi
 **RepoBeagle never runs repo code.** It never runs installs or builds, and it never extracts archives.
 
 ## Install (DGX Spark / any Linux, arm64 or x86_64)
-The scanners ship as a prebuilt **public** multi-arch image (no login needed), `ghcr.io/jvr0x/repobeagle` (linux/amd64 + linux/arm64). It's built by `.github/workflows/image.yml` on every push to main, weekly, and on manual dispatch. The tags are `latest`, `sha-<commit>` and the ISO week (e.g. `2026-W42`).
+The scanners ship as a prebuilt **public** multi-arch image (no login needed), `ghcr.io/jvr0x/repobeagle` (linux/amd64 + linux/arm64). It's built by `.github/workflows/image.yml` on every push to main, on `v*` release tags, weekly, and on manual dispatch. Release tags get `v1.0.0`-style and `stable` tags; main also gets `latest`, `sha-<commit>` and the ISO week (e.g. `2026-W42`). `install.sh` and `repobeagle` default to the image matching the `VERSION` file (currently `v1.0.0`).
 ```bash
 git clone https://github.com/jvr0x/repobeagle && cd repobeagle
-./install.sh                   # docker pull ghcr.io/jvr0x/repobeagle:latest + install the repobeagle wrapper
+./install.sh                   # docker pull ghcr.io/jvr0x/repobeagle:v1.0.0 + install the repobeagle wrapper
 ./install.sh --build-local     # fallback: build the same image locally from the Dockerfile
 ./install.sh --local-tools     # also install gitleaks/semgrep/guarddog on the host for --no-docker
 ```
@@ -31,7 +31,7 @@ How a scan is split up:
 - **Scan (container):** `docker run --rm --network none --read-only --cap-drop ALL`, non-root, with the clone mounted read-only.
 - **OSV (host):** lockfiles only.
 
-Set `BEAGLE_IMAGE` to use a different tag.
+Set `BEAGLE_IMAGE` to use a different tag (e.g. `ghcr.io/jvr0x/repobeagle:latest` for the newest main build).
 
 ## Usage
 ```bash
