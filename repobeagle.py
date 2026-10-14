@@ -639,12 +639,7 @@ def scan_gitleaks(src, out):
     return fs, None
 
 def semgrep_configs():
-    cfgs = [RULES_DIR / "custom.yml"]
-    for n in ("security-audit", "secrets"):
-        f = RULES_DIR / "vendor" / f"{n}.yml"
-        if f.exists() and f.stat().st_size > 100:
-            cfgs.append(f)
-    return cfgs
+    return [RULES_DIR / "custom.yml"]
 
 def scan_semgrep(src, out):
     cfgs = semgrep_configs()
