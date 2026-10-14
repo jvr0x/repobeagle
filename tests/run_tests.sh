@@ -29,6 +29,7 @@ RULES="magic-mismatch typosquat-dep high-entropy-blob minified-outside-dist" \
 check tests/fixtures/trap-gha RED $L --strict
 check tests/fixtures/control-clean GREEN $L --strict   # pinned actions, dist bundle, normal README, real deps
 python3 tests/test_trust.py || fail=1
+python3 tests/test_banner.py || fail=1
 tests/test_cleanup.sh || fail=1
 if [[ "${1:-}" != "--offline" ]]; then
   check https://github.com/psf/requests                              "GREEN|YELLOW"

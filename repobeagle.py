@@ -960,7 +960,42 @@ ACTIONS = {
               "Static scanning can't prove safety; it does not observe runtime behavior."],
 }
 
-def color_enabled(): return sys.stdout.isatty() and not os.environ.get("NO_COLOR") and os.environ.get("TERM") != "dumb"
+def color_enabled(stream=None):
+    """Returns True if ANSI colors should be written to stream (default stdout)."""
+    return (stream or sys.stdout).isatty() and not os.environ.get("NO_COLOR") and os.environ.get("TERM") != "dumb"
+
+BANNER_DOG = [                            # beagle face, front view: white blaze, floppy ears
+    r"       .-'''''-.",
+    r"     .'  |   |  '.",
+    r"  .-/    |   |    \-.",
+    r" /  |  _ |   | _  |  \ ",
+    r"|   | (o)|   |(o) |   |",
+    r"|   |    /   \    |   |",
+    r"|   |   / .-. \   |   |",
+    r"|   |  (  (_)  )  |   |",
+    r" \  |   '-.|.-'   |  /",
+    r"  \_|    \_^_/    |_/",
+    r"     '-._______.-'",
+]
+BANNER_WORD = [
+    r" ___                  ___                   _",
+    r"| _ \ ___  _ __  ___ | _ ) ___  __ _  __ _ | | ___",
+    r"|   // -_)| '_ \/ _ \| _ \/ -_)/ _` |/ _` || |/ -_)",
+    r"|_|_\\___|| .__/\___/|___/\___|\__,_|\__, ||_|\___|",
+    r"          |_|                        |___/",
+]
+BANNER_TAG = "> Don't clone what you haven't sniffed._"
+
+def banner(use_color):
+    """Returns the startup banner (beagle, wordmark, tagline), max 79 columns, ANSI-colored if use_color."""
+    C = (lambda code, s: f"\033[{code}m{s}\033[0m" if s else s) if use_color else (lambda code, s: s)
+    rows = []
+    for i, dog in enumerate(BANNER_DOG):
+        # Reason: wordmark sits on rows 3-7 and the tagline on row 9 so both stay centered beside the face.
+        right = C("1;96", BANNER_WORD[i - 3]) if 3 <= i < 3 + len(BANNER_WORD) else C("95", BANNER_TAG) if i == 9 else ""
+        dog = dog.rstrip()
+        rows.append(C("36", dog) + (" " * (26 - len(dog)) + right if right else ""))
+    return "\n".join(rows) + "\n"
 
 def report(meta, findings, v, why, counts, notes, ai, use_color, maxn=40):
     C = (lambda code, s: f"\033[{code}m{s}\033[0m") if use_color else (lambda code, s: s)
@@ -1034,6 +1069,7 @@ def _install_cleanup():
             except (ValueError, OSError): pass   # not in main thread
 
 def cmd_scan(a):
+    print(banner(color_enabled(sys.stderr) and not a.no_color), file=sys.stderr)   # stderr keeps stdout reports clean
     t0 = time.time()
     profile = "strict" if a.strict else "relaxed" if a.relaxed else "balanced"
     work = None
