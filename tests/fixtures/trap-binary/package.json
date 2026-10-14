@@ -1,0 +1,1 @@
+{ "name": "trap-binary", "version": "0.0.1", "dependencies": { "lodahs": "^4.17.21", "expres": "^4.0.0", "react": "^18.0.0" } }

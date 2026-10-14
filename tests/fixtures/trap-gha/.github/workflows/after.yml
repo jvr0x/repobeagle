@@ -1,0 +1,12 @@
+name: after
+on:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: console.log("done")

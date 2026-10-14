@@ -1,0 +1,6 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+[project]
+name = "tiny-math"
+dependencies = ["requests>=2.31", "numpy"]

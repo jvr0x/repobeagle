@@ -1,0 +1,7 @@
+[package]
+name = "t"
+version = "0.1.0"
+
+[dependencies]
+serdd = "1"
+tokio = "1"

@@ -1,0 +1,3 @@
+[build-system]
+requires = ["evilbuild"]
+build-backend = "evilbuild.api"
