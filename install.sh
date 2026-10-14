@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# odinscan-shield installer (idempotent).
-#   ./install.sh                 pull prebuilt image ghcr.io/jvr0x/odinscan-shield:latest + install wrapper
+# beagle installer (idempotent).
+#   ./install.sh                 pull prebuilt image ghcr.io/jvr0x/repobeagle:latest + install wrapper
 #   ./install.sh --build-local   build the image locally from this folder instead of pulling
 #   ./install.sh --local-tools   also install gitleaks/semgrep/guarddog on the host (for --no-docker fallback)
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-IMAGE="${OSHIELD_IMAGE:-ghcr.io/jvr0x/odinscan-shield:latest}"
-PREFIX="${OSHIELD_HOME:-$HOME/.local/share/odinscan-shield}"
-BIN="${OSHIELD_BIN:-$HOME/.local/bin}"
+IMAGE="${BEAGLE_IMAGE:-ghcr.io/jvr0x/repobeagle:latest}"
+PREFIX="${BEAGLE_HOME:-$HOME/.local/share/repobeagle}"
+BIN="${BEAGLE_BIN:-$HOME/.local/bin}"
 BUILD_LOCAL=0; LOCAL_TOOLS=0
 for a in "$@"; do case "$a" in --build-local) BUILD_LOCAL=1;; --local-tools) LOCAL_TOOLS=1;; *) echo "unknown option $a"; exit 1;; esac; done
-say(){ printf '\033[1;36m[odinscan-shield]\033[0m %s\n' "$*"; }
+say(){ printf '\033[1;36m[beagle]\033[0m %s\n' "$*"; }
 mkdir -p "$BIN" "$PREFIX"
 case "$(uname -m)" in
   aarch64|arm64) GL_ARCH=arm64; OSV_ARCH=arm64 ;;
@@ -54,14 +54,14 @@ if [[ $LOCAL_TOOLS == 1 ]]; then
 fi
 
 # 4) thin wrapper
-cat > "$BIN/odinscan-shield" <<WRAP
+cat > "$BIN/beagle" <<WRAP
 #!/usr/bin/env bash
-export OSHIELD_IMAGE="\${OSHIELD_IMAGE:-$IMAGE}"
+export BEAGLE_IMAGE="\${BEAGLE_IMAGE:-$IMAGE}"
 export PATH="$BIN:\$PATH"
-exec python3 "$HERE/odinscan_shield.py" "\$@"
+exec python3 "$HERE/repobeagle.py" "\$@"
 WRAP
-chmod +x "$BIN/odinscan-shield"
-ln -sf "$BIN/odinscan-shield" "$BIN/odinshield"
-say "installed $BIN/odinscan-shield (image: $IMAGE)"
+chmod +x "$BIN/beagle"
+ln -sf "$BIN/beagle" "$BIN/repobeagle"
+say "installed $BIN/beagle (image: $IMAGE)"
 case ":$PATH:" in *":$BIN:"*) ;; *) say "add $BIN to your PATH";; esac
-say "try: odinscan-shield scan https://github.com/psf/requests"
+say "try: beagle scan https://github.com/psf/requests"

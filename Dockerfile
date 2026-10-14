@@ -1,4 +1,4 @@
-# odinscan-shield-scanner: offline scanning image. Multi-arch (amd64/arm64).
+# beagle-scanner: offline scanning image. Multi-arch (amd64/arm64).
 FROM python:3.12-slim
 ARG GITLEAKS_VERSION=8.30.1
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates git \
@@ -7,10 +7,10 @@ RUN set -eux; a="$(uname -m)"; case "$a" in aarch64) g=arm64;; x86_64) g=x64;; *
     curl -fsSL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_${g}.tar.gz" \
     | tar -xz -C /usr/local/bin gitleaks
 RUN pip install --no-cache-dir semgrep guarddog
-COPY rules /opt/odinscan-shield/rules
-COPY odinscan_shield.py /opt/odinscan-shield/odinscan_shield.py
+COPY rules /opt/repobeagle/rules
+COPY repobeagle.py /opt/repobeagle/repobeagle.py
 ENV HOME=/tmp SEMGREP_ENABLE_VERSION_CHECK=0 SEMGREP_SEND_METRICS=off PYTHONDONTWRITEBYTECODE=1
 RUN useradd -u 10001 -m scanner
 USER 10001
 WORKDIR /tmp
-ENTRYPOINT ["python3", "/opt/odinscan-shield/odinscan_shield.py", "_inner"]
+ENTRYPOINT ["python3", "/opt/repobeagle/repobeagle.py", "_inner"]

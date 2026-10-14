@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""odinscan-shield v1: static safety gate for untrusted repositories.
+"""beagle v1: static safety gate for untrusted repositories.
 
 NEVER executes repository code. Stdlib only (scanners are external binaries).
-  odinscan-shield scan <repo-url|local-path> [--strict|--balanced|--relaxed] [--keep]
+  beagle scan <repo-url|local-path> [--strict|--balanced|--relaxed] [--keep]
                   [--json out.json] [--no-docker] [--verify-deps] [--no-osv]
 """
 import argparse, json, os, re, shutil, subprocess, sys, tempfile, time, unicodedata
@@ -12,7 +12,7 @@ from pathlib import Path
 VERSION = "1.0.0"
 HERE = Path(__file__).resolve().parent
 RULES_DIR = HERE / "rules"
-IMAGE = os.environ.get("OSHIELD_IMAGE", "ghcr.io/jvr0x/odinscan-shield:latest")
+IMAGE = os.environ.get("BEAGLE_IMAGE", "ghcr.io/jvr0x/repobeagle:latest")
 SEV_ORDER = {"critical": 4, "high": 3, "medium": 2, "low": 1, "info": 0}
 MAX_FILE = 1_500_000
 SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "__pycache__", ".tox", "dist", "build", ".mypy_cache"}
@@ -425,7 +425,7 @@ def scan_semgrep(src, out):
         f = os.path.relpath(r["path"], src) if os.path.isabs(r["path"]) else r["path"]
         f = f[len(str(src)) + 1:] if f.startswith(str(src)) else f
         sev = sevmap.get(r["extra"].get("severity"), "low")
-        if re.search(r"(?i)(^|/)(tests?|testing|spec|__tests__|fixtures?|examples?|docs?)/", f) and sev == "high" and not r["check_id"].startswith("odinscan-shield"):
+        if re.search(r"(?i)(^|/)(tests?|testing|spec|__tests__|fixtures?|examples?|docs?)/", f) and sev == "high" and not r["check_id"].startswith("repobeagle"):
             sev = "medium"
         rid = r["check_id"].split(".")[-1]
         fs.append(finding("semgrep", sev, f, r["start"]["line"], rid, r["extra"].get("lines", ""), r["extra"].get("message", "")[:220]))
@@ -556,13 +556,13 @@ def verify_deps(src):
 KEY_FILE_RE = re.compile(r"(?i)(^|/)(readme[^/]*|skill\.md|agents?\.md|claude\.md|package\.json|setup\.py|pyproject\.toml|.*mcp.*\.json|plugin\.json|Makefile|install\.sh|devcontainer\.json)$")
 
 def env(k, d=None):
-    """OSHIELD_* with legacy REPO_GUARD_* fallback."""
-    return os.environ.get("OSHIELD_" + k) or os.environ.get("REPO_GUARD_" + k) or d
+    """BEAGLE_* with legacy REPO_GUARD_* fallback."""
+    return os.environ.get("BEAGLE_" + k) or os.environ.get("REPO_GUARD_" + k) or d
 
 def ai_review(src, findings):
     url = env("LLM_URL")
     if not url:
-        return None, "AI review skipped (set OSHIELD_LLM_URL to enable; REPO_GUARD_LLM_URL also accepted)"
+        return None, "AI review skipped (set BEAGLE_LLM_URL to enable; REPO_GUARD_LLM_URL also accepted)"
     url = url.rstrip("/")
     if not url.endswith("/chat/completions"):
         url += "/chat/completions" if url.endswith("/v1") else "/v1/chat/completions"
@@ -613,12 +613,12 @@ def fetch(target, work):
                GIT_CONFIG_NOSYSTEM="1", GIT_ASKPASS="/bin/false", SSH_ASKPASS="/bin/false")
     G = ["git", "-c", "core.hooksPath=/dev/null", "-c", "core.symlinks=false", "-c", "core.fsmonitor=false",
          "-c", "protocol.file.allow=never", "-c", "credential.helper="]
-    tmo = int(os.environ.get("OSHIELD_CLONE_TIMEOUT", "1800"))
+    tmo = int(os.environ.get("BEAGLE_CLONE_TIMEOUT", "1800"))
     def git(args, cwd=None):
         try:
             r = subprocess.run(G + args, env=env, cwd=cwd, capture_output=True, text=True, timeout=tmo)
         except subprocess.TimeoutExpired:
-            raise SystemExit("git timed out (set OSHIELD_CLONE_TIMEOUT to raise the limit)")
+            raise SystemExit("git timed out (set BEAGLE_CLONE_TIMEOUT to raise the limit)")
         if r.returncode != 0:
             raise SystemExit("git failed: " + r.stderr.strip()[-400:])
         return r.stdout
@@ -649,7 +649,7 @@ def run_in_docker(src, out):
     os.chmod(out, 0o777)
     cmd = ["docker", "run", "--rm", "--network", "none", "--read-only", "--tmpfs", "/tmp:rw,exec,size=1g",
            "--user", f"{uid}:{gid}", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", "512",
-           "--memory", os.environ.get("OSHIELD_MEMORY", "6g"), "-e", "HOME=/tmp",
+           "--memory", os.environ.get("BEAGLE_MEMORY", "6g"), "-e", "HOME=/tmp",
            "-v", f"{src}:/src:ro", "-v", f"{out}:/out:rw", IMAGE, "/src", "/out"]
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
     try:
@@ -695,7 +695,7 @@ def report(meta, findings, v, why, counts, notes, ai, use_color, maxn=40):
     C = (lambda code, s: f"\033[{code}m{s}\033[0m") if use_color else (lambda code, s: s)
     vc = {"RED": "1;41;97", "YELLOW": "1;43;30", "GREEN": "1;42;30"}[v]
     sc = {"critical": "1;91", "high": "91", "medium": "93", "low": "96", "info": "37"}
-    print(C("1", f"\nOdinScan Shield {VERSION}  |  {meta['target']}"))
+    print(C("1", f"\nRepoBeagle {VERSION}  |  {meta['target']}"))
     print(f"mode: {meta['mode']}   profile: {meta['profile']}   files: {meta['files']}   time: {meta['seconds']}s")
     print(f"tools: " + ", ".join(f"{k}({t['findings']}{'' if t['ok'] else ' !'})" for k, t in meta["tools"].items()))
     print("\n" + C(vc, f"  VERDICT: {v}  ") + "  " + why)
@@ -746,16 +746,16 @@ def dedupe(fs):
 def cmd_scan(a):
     t0 = time.time()
     profile = "strict" if a.strict else "relaxed" if a.relaxed else "balanced"
-    work = tempfile.mkdtemp(prefix="oshield-")
+    work = tempfile.mkdtemp(prefix="beagle-")
     os.chmod(work, 0o700)
     try:
-        print(f"[odinscan-shield] fetching {a.target} ...", file=sys.stderr)
+        print(f"[beagle] fetching {a.target} ...", file=sys.stderr)
         src, how = fetch(a.target, work)
         out = Path(work) / "out"; out.mkdir()
         use_docker = not a.no_docker and docker_ok()
         if not a.no_docker and not use_docker:
-            print(f"[odinscan-shield] docker image {IMAGE} not available -> local fallback (run ./install.sh, or ./install.sh --build-local)", file=sys.stderr)
-        print(f"[odinscan-shield] scanning ({'docker --network none' if use_docker else 'local'}) ...", file=sys.stderr)
+            print(f"[beagle] docker image {IMAGE} not available -> local fallback (run ./install.sh, or ./install.sh --build-local)", file=sys.stderr)
+        print(f"[beagle] scanning ({'docker --network none' if use_docker else 'local'}) ...", file=sys.stderr)
         res = run_in_docker(src, out) if use_docker else inner(src, out)
         findings, notes, tools = res["findings"], res["notes"], res["tools"]
         sk = Path(work) / "skipped.json"
@@ -786,9 +786,9 @@ def cmd_scan(a):
             Path(a.json).write_text(json.dumps({"version": VERSION, "verdict": v, "why": why, "counts": counts, "meta": meta,
                                                 "ai_review": ai, "findings": findings, "raw_findings_count": raw_count, "notes": notes,
                                                 "recommended_actions": ACTIONS[v]}, indent=2))
-            print(f"[odinscan-shield] JSON written to {a.json}", file=sys.stderr)
+            print(f"[beagle] JSON written to {a.json}", file=sys.stderr)
         if a.keep:
-            print(f"[odinscan-shield] kept clone at {src}", file=sys.stderr)
+            print(f"[beagle] kept clone at {src}", file=sys.stderr)
         return {"GREEN": 0, "YELLOW": 1, "RED": 2}[v]
     finally:
         if not a.keep:
@@ -797,7 +797,7 @@ def cmd_scan(a):
 def main():
     if len(sys.argv) >= 2 and sys.argv[1] == "_inner":
         inner(sys.argv[2], sys.argv[3]); return 0
-    ap = argparse.ArgumentParser(prog="odinscan-shield", description="OdinScan Shield (odinscan.ai): Static safety gate for untrusted repos (never executes repo code).")
+    ap = argparse.ArgumentParser(prog="beagle", description="RepoBeagle: Static safety gate for untrusted repos (never executes repo code).")
     sp = ap.add_subparsers(dest="cmd", required=True)
     s = sp.add_parser("scan", help="scan a git URL or local directory")
     s.add_argument("target")
