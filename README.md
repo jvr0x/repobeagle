@@ -12,10 +12,9 @@ You give it a git URL or a local folder and get a **GREEN / YELLOW / RED** verdi
 **RepoBeagle never runs repo code.** It never runs installs or builds, and it never extracts archives.
 
 ## Install (DGX Spark / any Linux, arm64 or x86_64)
-The scanners ship as a prebuilt **private** multi-arch image, `ghcr.io/jvr0x/repobeagle` (linux/amd64 + linux/arm64). It's built by `.github/workflows/image.yml` on every push to main, weekly, and on manual dispatch. The tags are `latest`, `sha-<commit>` and the ISO week (e.g. `2026-W42`).
+The scanners ship as a prebuilt **public** multi-arch image (no login needed), `ghcr.io/jvr0x/repobeagle` (linux/amd64 + linux/arm64). It's built by `.github/workflows/image.yml` on every push to main, weekly, and on manual dispatch. The tags are `latest`, `sha-<commit>` and the ISO week (e.g. `2026-W42`).
 ```bash
 git clone https://github.com/jvr0x/repobeagle && cd repobeagle
-echo <PAT with read:packages> | docker login ghcr.io -u jvr0x --password-stdin   # required: the image is private
 ./install.sh                   # docker pull ghcr.io/jvr0x/repobeagle:latest + install the repobeagle wrapper
 ./install.sh --build-local     # fallback: build the same image locally from the Dockerfile
 ./install.sh --local-tools     # also install gitleaks/semgrep/guarddog on the host for --no-docker

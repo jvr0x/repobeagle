@@ -27,7 +27,7 @@ if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
     say "building $IMAGE locally ($(uname -m))"; docker build -t "$IMAGE" "$HERE"
   else
     say "pulling $IMAGE"
-    docker pull "$IMAGE" || { echo "pull failed. Private image: run 'docker login ghcr.io -u jvr0x' with a token that has read:packages, or use --build-local"; exit 1; }
+    docker pull "$IMAGE" || { echo "pull failed (check your network or Docker), or use --build-local"; exit 1; }
   fi
 else
   say "Docker not available -> scans will run with host tools (--no-docker). Installing them."; LOCAL_TOOLS=1
