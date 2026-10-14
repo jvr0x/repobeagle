@@ -1,0 +1,42 @@
+rules:
+  - id: repo-guard.python-exec-decoded-blob
+    languages: [python]
+    severity: ERROR
+    message: exec/eval of base64/zlib/marshal-decoded data (classic obfuscated payload)
+    pattern-either:
+      - pattern: exec(base64.b64decode(...))
+      - pattern: eval(base64.b64decode(...))
+      - pattern: exec(zlib.decompress(...))
+      - pattern: exec(marshal.loads(...))
+      - pattern: exec(codecs.decode(...))
+  - id: repo-guard.js-eval-decoded-blob
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: eval/Function of base64-decoded data
+    pattern-either:
+      - pattern: eval(atob(...))
+      - pattern: eval(Buffer.from(..., "base64").toString(...))
+      - pattern: new Function(Buffer.from(..., "base64").toString(...))
+      - pattern: eval(Buffer.from(..., 'base64').toString())
+  - id: repo-guard.python-download-and-run
+    languages: [python]
+    severity: ERROR
+    message: downloads remote content and executes it
+    pattern-either:
+      - pattern: exec(urllib.request.urlopen(...).read(...))
+      - pattern: exec(requests.get(...).text)
+      - pattern: os.system("..." + $X)
+  - id: repo-guard.js-child-process-network-shell
+    languages: [javascript, typescript]
+    severity: WARNING
+    message: child_process exec of a shell string (check for curl/wget/download-and-run)
+    patterns:
+      - pattern-either:
+          - pattern: require('child_process').exec($CMD, ...)
+          - pattern: require('child_process').execSync($CMD, ...)
+          - pattern: child_process.exec($CMD, ...)
+          - pattern: child_process.execSync($CMD, ...)
+          - pattern: execSync($CMD, ...)
+      - metavariable-regex:
+          metavariable: $CMD
+          regex: (?i).*(curl|wget|bash|powershell|\|\s*sh).*
