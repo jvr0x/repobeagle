@@ -990,7 +990,7 @@ def report(meta, findings, v, why, counts, notes, ai, use_color, maxn=40):
     if notes:
         print(C("2", "\nNotes:"))
         for n in notes: print(C("2", f"  - {n}"))
-    print()
+    print("\n" + C(vc, f"  VERDICT: {v}  ") + f"  critical {counts['critical']}  high {counts['high']}  medium {counts['medium']}  low {counts['low']}")
 
 def collapse(fs, limit=20):
     """Collapse floods of identical-title findings (e.g. 30k archives) into one summary each."""
