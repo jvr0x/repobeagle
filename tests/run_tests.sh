@@ -18,6 +18,6 @@ if [[ "${1:-}" != "--offline" ]]; then
   check https://github.com/tj/commander.js                           "GREEN|YELLOW"
   check https://github.com/invariantlabs-ai/mcp-injection-experiments RED      # MCP tool poisoning
   check https://github.com/juice-shop/juice-shop                     YELLOW   # control: vulnerable, not malicious
-  check https://github.com/DataDog/malicious-software-packages-dataset "YELLOW|RED" --no-osv  # encrypted zips flagged, never extracted (large clone)
+  check https://github.com/DataDog/malicious-software-packages-dataset "YELLOW|RED" --no-osv  # zips listed via ls-tree, never downloaded
 fi
 exit $fail

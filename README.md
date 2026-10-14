@@ -6,16 +6,27 @@ You give it a git URL or a local folder and get a **GREEN / YELLOW / RED** verdi
 **v1 never runs repo code.** It never runs installs or builds, and it never extracts archives.
 
 ## Install (DGX Spark / any Linux, arm64 or x86_64)
+The scanners ship as a prebuilt **private** multi-arch image, `ghcr.io/jvr0x/repo-guard-local` (linux/amd64 + linux/arm64). It's built by `.github/workflows/image.yml` on every push to main, weekly, and on manual dispatch. The tags are `latest`, `sha-<commit>` and the ISO week (e.g. `2026-W42`).
 ```bash
-unzip repo-guard-local.zip && cd repo-guard-local
-./install.sh            # add --no-docker to skip the image build
+unzip repo-guard-local.zip && cd repo-guard-local      # or: git clone the repo
+echo <PAT with read:packages> | docker login ghcr.io -u jvr0x --password-stdin   # required: the image is private
+./install.sh                   # docker pull ghcr.io/jvr0x/repo-guard-local:latest + install the repo-guard wrapper
+./install.sh --build-local     # fallback: build the same image locally from the Dockerfile
+./install.sh --local-tools     # also install gitleaks/semgrep/guarddog on the host for --no-docker
 ```
 `install.sh` is idempotent. It does the following:
-- Picks the right builds for your CPU from `uname -m`: aarch64 gets `gitleaks …linux_arm64` and `osv-scanner_linux_arm64`, x86_64 gets `linux_x64` and `linux_amd64`. It downloads the official GitHub release binaries into `~/.local/bin`.
-- Installs **semgrep** and **guarddog** into a private venv (`~/.local/share/repo-guard/venv`).
-- Vendors the Semgrep registry packs `p/security-audit` and `p/secrets` into `rules/vendor/`, so scans work with no network.
-- Builds the Docker image **`repo-guard-scanner`** (python:3.12-slim, native arch), which contains gitleaks, semgrep, guarddog, the rules and the scanner.
-- Links `repo-guard` into `~/.local/bin`.
+- Checks that Docker is available and pulls (or builds) the image.
+- Installs `osv-scanner`, which runs on the host because it needs network. Arch is detected from `uname -m`: aarch64 gets `linux_arm64`, x86_64 gets `linux_amd64`.
+- Writes a thin `~/.local/bin/repo-guard` wrapper.
+
+If Docker isn't available, it installs the host tools automatically, and scans run with `--no-docker`.
+
+How a scan is split up:
+- **Clone (host, network-enabled):** a filtered, hooks-disabled git fetch that never executes anything.
+- **Scan (container):** `docker run --rm --network none --read-only --cap-drop ALL`, non-root, with the clone mounted read-only.
+- **OSV (host):** lockfiles only.
+
+Set `REPO_GUARD_IMAGE` to use a different tag.
 
 ## Usage
 ```bash
@@ -33,7 +44,7 @@ Exit code: 0 = GREEN, 1 = YELLOW, 2 = RED. Colour turns off when output isn't a 
 To change the thresholds, edit `PROFILES` in `repo_guard.py`.
 
 ## Pipeline
-1. **Fetch** runs `git clone --depth 1 --no-recurse-submodules --single-branch` into a fresh temp dir (mode 0700), with these protections: `GIT_TERMINAL_PROMPT=0`, `core.hooksPath=/dev/null`, `core.symlinks=false`, `protocol.file.allow=never`, `GIT_ALLOW_PROTOCOL=https:http:ssh`, no credential helper, and LFS smudge skipped. A local directory is copied instead, without `.git`. The copy is deleted at the end unless you pass `--keep`.
+1. **Fetch** always uses a filtered checkout, so huge repos stay small. It runs `git clone --depth 1 --filter=blob:none --no-checkout --no-recurse-submodules`, lists files with `git ls-tree`, then does a sparse checkout that **excludes archives and binaries**. Those files are reported as findings but never downloaded. For example, DataDog's ~44 GB malware dataset comes down as ~250 MB in about 17 s. The checkout goes into a fresh temp dir (mode 0700), with these protections: `GIT_TERMINAL_PROMPT=0`, `core.hooksPath=/dev/null`, `core.symlinks=false`, `protocol.file.allow=never`, `GIT_ALLOW_PROTOCOL=https:http:ssh`, no credential helper, and LFS smudge skipped. A local directory is copied instead, without `.git`. The copy is deleted at the end unless you pass `--keep`.
 2. **Offline scanners** run in `docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges --user <you, non-root>` with the clone mounted **read-only** and no home directory or credentials mounted. If Docker or the image is missing, or you pass `--no-docker`, they run locally on the temp folder.
    - **gitleaks** `detect --no-git` (redacted). Hits in test/docs paths are downgraded.
    - **Semgrep** with the vendored `p/security-audit` and `p/secrets` packs plus `rules/custom.yml` (decode-and-exec, download-and-run, child_process curl).
@@ -80,7 +91,7 @@ Run `tests/run_tests.sh`, or `tests/run_tests.sh --offline` for the fixtures onl
 | psf/requests, tj/commander.js | GREEN/YELLOW |
 | invariantlabs-ai/mcp-injection-experiments | RED (MCP tool poisoning / exfil instructions) |
 | juice-shop/juice-shop | YELLOW (control: intentionally vulnerable code, not malicious) |
-| DataDog/malicious-software-packages-dataset | YELLOW: encrypted malware zips flagged as uninspectable, never extracted. The clone is large; uses `--no-osv`. |
+| DataDog/malicious-software-packages-dataset | YELLOW: about 29.7k malware-sample zips are listed via ls-tree and flagged as uninspectable. They are never downloaded or extracted. |
 
 ## What it catches, and what it doesn't
 **Catches**: obvious install-time payloads, credential theft patterns, hidden or invisible agent instructions, MCP tool poisoning, over-privileged agent configs, committed secrets, known-vulnerable or known-malicious dependencies, and obfuscated loaders.

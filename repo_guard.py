@@ -12,7 +12,7 @@ from pathlib import Path
 VERSION = "1.0.0"
 HERE = Path(__file__).resolve().parent
 RULES_DIR = HERE / "rules"
-IMAGE = os.environ.get("REPO_GUARD_IMAGE", "repo-guard-scanner")
+IMAGE = os.environ.get("REPO_GUARD_IMAGE", "ghcr.io/jvr0x/repo-guard-local:latest")
 SEV_ORDER = {"critical": 4, "high": 3, "medium": 2, "low": 1, "info": 0}
 MAX_FILE = 1_500_000
 SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "__pycache__", ".tox", "dist", "build", ".mypy_cache"}
@@ -607,16 +607,30 @@ def fetch(target, work):
         raise SystemExit(f"refusing target {target!r}: use an https/ssh git URL or an existing local directory")
     env = dict(os.environ, GIT_TERMINAL_PROMPT="0", GIT_LFS_SKIP_SMUDGE="1", GIT_ALLOW_PROTOCOL="https:http:ssh",
                GIT_CONFIG_NOSYSTEM="1", GIT_ASKPASS="/bin/false", SSH_ASKPASS="/bin/false")
-    cmd = ["git", "-c", "core.hooksPath=/dev/null", "-c", "core.symlinks=false", "-c", "core.fsmonitor=false",
-           "-c", "protocol.file.allow=never", "-c", "credential.helper=",
-           "clone", "--depth", "1", "--no-recurse-submodules", "--single-branch", "--no-tags", "--", target, str(dest)]
-    try:
-        r = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=int(os.environ.get("REPO_GUARD_CLONE_TIMEOUT", "1800")))
-    except subprocess.TimeoutExpired:
-        raise SystemExit("git clone timed out (set REPO_GUARD_CLONE_TIMEOUT to raise the limit)")
-    if r.returncode != 0:
-        raise SystemExit("git clone failed: " + r.stderr.strip()[-400:])
-    return dest, "git clone --depth 1"
+    G = ["git", "-c", "core.hooksPath=/dev/null", "-c", "core.symlinks=false", "-c", "core.fsmonitor=false",
+         "-c", "protocol.file.allow=never", "-c", "credential.helper="]
+    tmo = int(os.environ.get("REPO_GUARD_CLONE_TIMEOUT", "1800"))
+    def git(args, cwd=None):
+        try:
+            r = subprocess.run(G + args, env=env, cwd=cwd, capture_output=True, text=True, timeout=tmo)
+        except subprocess.TimeoutExpired:
+            raise SystemExit("git timed out (set REPO_GUARD_CLONE_TIMEOUT to raise the limit)")
+        if r.returncode != 0:
+            raise SystemExit("git failed: " + r.stderr.strip()[-400:])
+        return r.stdout
+    # 1) blobless shallow clone: commits + trees only, no file contents yet
+    git(["clone", "--depth", "1", "--filter=blob:none", "--no-checkout", "--no-recurse-submodules",
+         "--single-branch", "--no-tags", "--", target, str(dest)])
+    # 2) list files from the tree (no blobs downloaded); archives/binaries are recorded but never fetched
+    names = git(["ls-tree", "-r", "--name-only", "HEAD"], cwd=dest).splitlines()
+    skipped = [n for n in names if n.lower().endswith(ARCHIVE_EXT) or Path(n).suffix.lower() in BINARY_EXT]
+    # 3) sparse checkout that excludes archives/binaries -> only text/source blobs are downloaded
+    pats = ["/*"] + [f"!*{e}" for e in ARCHIVE_EXT] + [f"!*{e}" for e in BINARY_EXT]
+    git(["sparse-checkout", "set", "--no-cone"] + pats, cwd=dest)
+    git(["checkout", "-q", "HEAD"], cwd=dest)
+    shutil.rmtree(dest / ".git", ignore_errors=True)
+    (Path(work) / "skipped.json").write_text(json.dumps(skipped))
+    return dest, f"git clone --depth 1 --filter=blob:none + sparse checkout ({len(skipped)} archives/binaries listed, not downloaded)"
 
 def docker_ok():
     if not shutil.which("docker"): return False
@@ -736,10 +750,19 @@ def cmd_scan(a):
         out = Path(work) / "out"; out.mkdir()
         use_docker = not a.no_docker and docker_ok()
         if not a.no_docker and not use_docker:
-            print("[repo-guard] docker image not available -> local fallback (run ./install.sh to build it)", file=sys.stderr)
+            print(f"[repo-guard] docker image {IMAGE} not available -> local fallback (run ./install.sh, or ./install.sh --build-local)", file=sys.stderr)
         print(f"[repo-guard] scanning ({'docker --network none' if use_docker else 'local'}) ...", file=sys.stderr)
         res = run_in_docker(src, out) if use_docker else inner(src, out)
         findings, notes, tools = res["findings"], res["notes"], res["tools"]
+        sk = Path(work) / "skipped.json"
+        if sk.exists():
+            for n in json.loads(sk.read_text()):
+                arch = n.lower().endswith(ARCHIVE_EXT)
+                mal = re.search(r"(?i)malicious|malware|sample|payload|infected", n)
+                findings.append(finding("agent-checks", "high" if (arch and mal) else "medium", n, 0,
+                    ("Archive (not downloaded; uninspectable, likely encrypted malware sample)" if mal else "Archive in repo (not downloaded/inspected)") if arch
+                    else "Prebuilt binary/compiled artifact (not downloaded/inspected)", n,
+                    "v1 never downloads or extracts archives/binaries; their contents cannot be vetted."))
         if not a.no_osv:
             t = time.time(); fs, note = scan_osv(src)
             findings += fs; tools["osv-scanner"] = {"findings": len(fs), "seconds": round(time.time() - t, 1), "ok": note is None}
