@@ -4,6 +4,7 @@
 NEVER executes repository code. Stdlib only (scanners are external binaries).
   repobeagle scan <repo-url|local-path> [--strict|--balanced|--relaxed] [--keep]
                   [--json out.json] [--no-docker] [--verify-deps] [--no-osv] [--no-trust]
+  repobeagle verify <github-repo> [--branch repobeagle] [--expect-sha SHA]
 """
 import argparse, json, os, re, shutil, subprocess, sys, tempfile, time, unicodedata
 import urllib.request
@@ -1129,6 +1130,92 @@ def cmd_scan(a):
             shutil.rmtree(work, ignore_errors=True)
             _WORKDIRS.discard(work)
 
+# ----------------------------------------------------------------------------
+# Verify a published badge report: repobeagle verify <github-repo>
+# ----------------------------------------------------------------------------
+VERIFY_IDENTITY = (r"^https://github\.com/jvr0x/repobeagle/\.github/workflows/scan\.yml"
+                   r"@refs/(heads/main|tags/v[0-9]+\.[0-9]+\.[0-9]+)$")
+VERIFY_ISSUER = "https://token.actions.githubusercontent.com"
+GITHUB_REPO_RE = re.compile(r"^(?:https?://|git@|ssh://git@)github\.com[/:]([^/]+)/([^/#?]+?)(?:\.git)?/?$")
+
+def _fetch(url, dest):
+    req = urllib.request.Request(url, headers={"User-Agent": "repobeagle"})
+    with urllib.request.urlopen(req, timeout=30) as resp, open(dest, "wb") as fh:
+        fh.write(resp.read())
+
+def cmd_verify(a):
+    """Check that a published badge report is authentic and current. Exits 0/1/2."""
+    if not ((a.report and a.bundle) or a.target):
+        print("verify: give a github repo (slug or URL), or local --report + --bundle files", file=sys.stderr)
+        return 1
+    cosign = shutil.which("cosign")
+    if not cosign:
+        print("verify: cosign not found on PATH; install it (https://github.com/sigstore/cosign)", file=sys.stderr)
+        return 1
+    slug = None
+    if a.target:
+        m = GITHUB_REPO_RE.match(a.target)
+        slug = f"{m.group(1)}/{m.group(2)}" if m else (a.target if re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", a.target) else None)
+        if not slug:
+            print(f"verify: cannot parse a github repo out of {a.target!r}", file=sys.stderr)
+            return 1
+    work = tempfile.mkdtemp(prefix="repobeagle-verify-")
+    try:
+        if a.report and a.bundle:
+            report_path, bundle_path = a.report, a.bundle
+        else:
+            report_path = os.path.join(work, "report.json")
+            bundle_path = os.path.join(work, "report.sigstore.json")
+            base = f"https://raw.githubusercontent.com/{slug}/{a.branch}"
+            try:
+                _fetch(f"{base}/report.json", report_path)
+                _fetch(f"{base}/report.sigstore.json", bundle_path)
+            except Exception as ex:
+                print(f"verify: cannot fetch report from {base} ({str(ex)[:140]})", file=sys.stderr)
+                return 1
+        r = subprocess.run([cosign, "verify-blob", "--bundle", bundle_path,
+                            "--certificate-identity-regexp", a.identity_regexp,
+                            "--certificate-oidc-issuer", VERIFY_ISSUER, report_path],
+                           capture_output=True, text=True, timeout=120)
+        if r.returncode != 0:
+            print("verify: SIGNATURE INVALID", file=sys.stderr)
+            print((r.stderr or r.stdout).strip()[-400:], file=sys.stderr)
+            return 1
+        try:
+            d = json.load(open(report_path, encoding="utf-8"))
+        except (OSError, ValueError) as ex:
+            print(f"verify: unreadable report: {ex}", file=sys.stderr)
+            return 1
+        v, c, meta = d.get("verdict"), d.get("counts", {}), d.get("meta", {})
+        use_color = color_enabled() and not a.no_color
+        C = (lambda code, s: f"\033[{code}m{s}\033[0m") if use_color else (lambda code, s: s)
+        print(f"repobeagle verify: {a.target or '(local files)'} (branch {a.branch})")
+        print(f"  signature: {C('1;42;30', 'VALID')}  policy: official scan.yml (main or v* tag)")
+        print(f"  report:    {C({'GREEN': '1;42;30', 'YELLOW': '1;43;30', 'RED': '1;41;97'}.get(v, '1'), str(v))}"
+              f"  {c.get('critical', 0)} critical / {c.get('high', 0)} high / {c.get('medium', 0)} medium / {c.get('low', 0)} low")
+        scanned = str(meta.get("scanned_sha", ""))
+        if scanned:
+            print(f"  scanned:   {scanned[:12]} at {meta.get('scanned_repo', '?')} (image {meta.get('image_ref', '?')})")
+        head = a.expect_sha or None
+        if head is None and a.target:
+            g = subprocess.run(["git", "ls-remote", f"https://github.com/{slug}.git", "HEAD"],
+                               capture_output=True, text=True, timeout=60)
+            if g.returncode == 0 and g.stdout.strip():
+                head = g.stdout.split()[0]
+            else:
+                print(f"  freshness: UNKNOWN (could not read HEAD of {slug})")
+        if head and scanned:
+            if scanned[:12] == head[:12]:
+                print(f"  freshness: {C('1;42;30', 'UP TO DATE')} (HEAD {head[:12]})")
+                return 0
+            print(f"  freshness: {C('1;43;30', 'STALE')} (report is for {scanned[:12]}, HEAD is {head[:12]})")
+            return 2
+        if not scanned:
+            print("  freshness: UNKNOWN (report has no meta.scanned_sha; produced by an older workflow)")
+        return 0
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
 def main():
     if len(sys.argv) >= 2 and sys.argv[1] == "_inner":
         inner(sys.argv[2], sys.argv[3]); return 0
@@ -1146,8 +1233,18 @@ def main():
     s.add_argument("--no-trust", action="store_true", help="skip GitHub trust signals (unauthenticated public API)")
     s.add_argument("--all", action="store_true", help="print all findings")
     s.add_argument("--no-color", action="store_true")
+    v = sp.add_parser("verify", help="verify a published repobeagle badge (signature + freshness); exit 0 valid/current, 1 invalid, 2 stale")
+    v.add_argument("target", nargs="?", help="github repo slug or URL whose repobeagle branch holds the badge")
+    v.add_argument("--branch", default="repobeagle", help="badge branch name (default: repobeagle)")
+    v.add_argument("--report", help="local report.json instead of fetching")
+    v.add_argument("--bundle", help="local report.sigstore.json instead of fetching")
+    v.add_argument("--expect-sha", help="commit SHA the report must cover (default: HEAD of the target repo)")
+    v.add_argument("--identity-regexp", default=VERIFY_IDENTITY, help="allowed signing workflow identity")
+    v.add_argument("--no-color", action="store_true")
     sp.add_parser("version")
     a = ap.parse_args()
+    if a.cmd == "verify":
+        return cmd_verify(a)
     if a.cmd == "version":
         print(VERSION); return 0
     _install_cleanup()

@@ -81,16 +81,24 @@ The workflow publishes a `repobeagle` branch containing `badge.json` (shields.io
 
 ### Verifying a badge (public repos)
 
-The badge is produced by the author's own CI, so on its own it is self-attested. The workflow therefore signs the report with Sigstore keyless signing and publishes the bundle as `report.sigstore.json` next to `report.json` on the badge branch. The signing certificate's identity is this repo's own reusable workflow (`jvr0x/repobeagle/.github/workflows/scan.yml`), which callers cannot edit, so a valid signature means the official pipeline scanned that commit and the report was not swapped afterwards. To verify a badge (needs [cosign](https://github.com/sigstore/cosign)):
+The badge is produced by the author's own CI, so on its own it is self-attested. The workflow therefore signs the report with Sigstore keyless signing and publishes the bundle as `report.sigstore.json` next to `report.json` on the badge branch. The signing certificate's identity is this repo's own reusable workflow (`jvr0x/repobeagle/.github/workflows/scan.yml`), which callers cannot edit, so a valid signature means the official pipeline scanned that commit and the report was not swapped afterwards. To verify a badge (needs [cosign](https://github.com/sigstore/cosign) on PATH):
 
 ```bash
-# fetch report.json + report.sigstore.json from the repobeagle branch, then:
+repobeagle verify jvr0x/jvr0x.github.io
+#   signature: VALID  policy: official scan.yml (main or v* tag)
+#   report:    YELLOW  0 critical / 6 high / 1 medium / 56 low
+#   scanned:   a7cb435002de at jvr0x/jvr0x.github.io (image ghcr.io/jvr0x/repobeagle:v1.0.0)
+#   freshness: UP TO DATE (HEAD a7cb435002de)
+```
+
+Exit codes: 0 = signature valid and report covers HEAD, 1 = invalid signature or missing report, 2 = valid but stale (report is older than HEAD). Local files work too: `repobeagle verify --report report.json --bundle report.sigstore.json`. What it runs under the hood:
+
+```bash
 cosign verify-blob \
   --bundle report.sigstore.json \
   --certificate-identity-regexp '^https://github\.com/jvr0x/repobeagle/\.github/workflows/scan\.yml@refs/(heads/main|tags/v[0-9]+\.[0-9]+\.[0-9]+)$' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   report.json
-python3 -c 'import json;print(json.load(open("report.json"))["meta"]["scanned_sha"])'   # must match the commit the badge claims
 ```
 
 What this does and does not prove:
