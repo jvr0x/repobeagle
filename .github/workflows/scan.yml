@@ -86,43 +86,57 @@ jobs:
             echo "IMAGE_DIGEST=$D"
           } >> "$GITHUB_ENV"
 
+      # The toolchain (scanner code, fixtures, README with attack examples) and the
+      # output dir must never be part of the scanned tree, or repobeagle scans itself.
+      - name: Relocate toolchain and output out of the scanned tree
+        run: |
+          set -euo pipefail
+          TOOLS="$RUNNER_TEMP/repobeagle-tools"
+          OUT="$RUNNER_TEMP/repobeagle-out"
+          rm -rf "$TOOLS" "$OUT"
+          mv .repobeagle-tools "$TOOLS"
+          mkdir -p "$OUT"
+          {
+            echo "TOOLS=$TOOLS"
+            echo "OUT=$OUT"
+          } >> "$GITHUB_ENV"
+
       - name: Scan
         id: scan
         run: |
           set -e
-          mkdir -p .repobeagle-out
           case "$PROFILE" in
             strict)   S=--strict ;;
             relaxed)  S=--relaxed ;;
             *)        S=--balanced ;;
           esac
           set +e
-          python3 .repobeagle-tools/repobeagle.py scan . $S --json .repobeagle-out/beagle.json --no-color
+          python3 "$TOOLS/repobeagle.py" scan . $S --json "$OUT/beagle.json" --no-color
           rc=$?
           set -e
-          if [ ! -s .repobeagle-out/beagle.json ] || [ "$rc" -gt 2 ]; then
+          if [ ! -s "$OUT/beagle.json" ] || [ "$rc" -gt 2 ]; then
             echo "repobeagle scan crashed (rc=$rc), no report"
             exit 1
           fi
-          python3 -c 'import json;d=json.load(open(".repobeagle-out/beagle.json"));print("rc=%d" % ({"GREEN":0,"YELLOW":1,"RED":2}[d["verdict"]],));print("verdict=%s" % d["verdict"])' >> "$GITHUB_OUTPUT"
-          python3 -c 'import json;d=json.load(open(".repobeagle-out/beagle.json"));print("verdict:",d["verdict"],d["counts"])'
+          python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));print("rc=%d" % ({"GREEN":0,"YELLOW":1,"RED":2}[d["verdict"]],));print("verdict=%s" % d["verdict"])' "$OUT/beagle.json" >> "$GITHUB_OUTPUT"
+          python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));print("verdict:",d["verdict"],d["counts"])' "$OUT/beagle.json"
         env:
           PROFILE: ${{ inputs.profile }}
 
       - name: Attach provenance to the report
         run: |
-          python3 -c 'import json,os;d=json.load(open(".repobeagle-out/beagle.json"));m=d.setdefault("meta",{});m.update(image_ref=os.environ["IMAGE_REF"],image_digest=os.environ["IMAGE_DIGEST"],toolchain_ref=os.environ["TOOLS_REF"],run_url=os.environ["RUN_URL"],scanned_repo=os.environ["GITHUB_REPOSITORY"],scanned_sha=os.environ["GITHUB_SHA"]);json.dump(d,open(".repobeagle-out/beagle.json","w"),indent=2)'
+          python3 -c 'import json,os,sys;p=sys.argv[1];d=json.load(open(p));m=d.setdefault("meta",{});m.update(image_ref=os.environ["IMAGE_REF"],image_digest=os.environ["IMAGE_DIGEST"],toolchain_ref=os.environ["TOOLS_REF"],run_url=os.environ["RUN_URL"],scanned_repo=os.environ["GITHUB_REPOSITORY"],scanned_sha=os.environ["GITHUB_SHA"]);json.dump(d,open(p,"w"),indent=2)' "$OUT/beagle.json"
 
       - name: Make badge
         run: |
-          python3 .repobeagle-tools/tools/make_badge.py .repobeagle-out/beagle.json \
-            --endpoint .repobeagle-out/badge.json --svg .repobeagle-out/badge.svg \
+          python3 "$TOOLS/tools/make_badge.py" "$OUT/beagle.json" \
+            --endpoint "$OUT/badge.json" --svg "$OUT/badge.svg" \
             --link "$RUN_URL"
       - name: Install cosign
         uses: sigstore/cosign-installer@v3
       - name: Sign the report (keyless)
         continue-on-error: true            # a missing bundle means "unverified", never "verified"
-        run: cosign sign-blob --yes --bundle .repobeagle-out/report.sigstore.json .repobeagle-out/beagle.json
+        run: cosign sign-blob --yes --bundle "$OUT/report.sigstore.json" "$OUT/beagle.json"
 
       - name: Publish badge branch
         if: inputs.badge-branch != ''
@@ -141,16 +155,16 @@ jobs:
           else
             git -C "$W" checkout -q --orphan "$B"
           fi
-          cp .repobeagle-out/badge.json "$W/badge.json"
-          cp .repobeagle-out/badge.svg "$W/badge.svg"
-          cp .repobeagle-out/beagle.json "$W/report.json"
-          cp .repobeagle-out/beagle.json "$W/report-${GITHUB_SHA:0:7}.json"
-          if [ -f .repobeagle-out/report.sigstore.json ]; then
-            cp .repobeagle-out/report.sigstore.json "$W/report.sigstore.json"
+          cp "$OUT/badge.json" "$W/badge.json"
+          cp "$OUT/badge.svg" "$W/badge.svg"
+          cp "$OUT/beagle.json" "$W/report.json"
+          cp "$OUT/beagle.json" "$W/report-${GITHUB_SHA:0:7}.json"
+          if [ -f "$OUT/report.sigstore.json" ]; then
+            cp "$OUT/report.sigstore.json" "$W/report.sigstore.json"
           fi
           if [ "$REF_TYPE" = "tag" ]; then
-            cp .repobeagle-out/badge.json "$W/badge-$REF_NAME.json"
-            cp .repobeagle-out/beagle.json "$W/report-$REF_NAME.json"
+            cp "$OUT/badge.json" "$W/badge-$REF_NAME.json"
+            cp "$OUT/beagle.json" "$W/report-$REF_NAME.json"
           fi
           git -C "$W" add -A
           git -C "$W" commit -qm "repobeagle: $VERDICT for $GITHUB_SHA"
@@ -167,7 +181,7 @@ jobs:
         continue-on-error: true            # needs statuses: write; degrades gracefully
         run: |
           set -euo pipefail
-          read -r STATE DESC < <(python3 -c 'import json;d=json.load(open(".repobeagle-out/beagle.json"));c=d["counts"];v=d["verdict"];print({"GREEN":"success","YELLOW":"neutral","RED":"failure"}[v], "RepoBeagle: %s (%s critical / %s high)" % (v, c["critical"], c["high"]))')
+          read -r STATE DESC < <(python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));c=d["counts"];v=d["verdict"];print({"GREEN":"success","YELLOW":"neutral","RED":"failure"}[v], "RepoBeagle: %s (%s critical / %s high)" % (v, c["critical"], c["high"]))' "$OUT/beagle.json")
           gh api "repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" \
             -f state="$STATE" -f context="repobeagle/scan" -f description="$DESC" \
             -f target_url="$RUN_URL"
