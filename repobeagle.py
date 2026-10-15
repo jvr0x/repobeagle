@@ -1224,7 +1224,7 @@ def cmd_verify(a):
                            capture_output=True, text=True, timeout=120)
         if r.returncode != 0:
             print("verify: SIGNATURE INVALID", file=sys.stderr)
-            print((r.stderr or r.stdout).strip()[-400:], file=sys.stderr)
+            print("\n".join((r.stderr or r.stdout).strip().splitlines()[-3:]), file=sys.stderr)
             return 1
         try:
             d = json.load(open(report_path, encoding="utf-8"))
