@@ -6,7 +6,7 @@ NEVER executes repository code. Stdlib only (scanners are external binaries).
                   [--json out.json] [--no-docker] [--verify-deps] [--no-osv] [--no-trust]
   repobeagle verify <github-repo> [--branch repobeagle] [--expect-sha SHA]
 """
-import argparse, json, os, re, shutil, subprocess, sys, tempfile, time, unicodedata
+import argparse, json, os, platform, re, shutil, subprocess, sys, tempfile, time, unicodedata
 import urllib.request
 from pathlib import Path
 
@@ -1143,14 +1143,45 @@ def _fetch(url, dest):
     with urllib.request.urlopen(req, timeout=30) as resp, open(dest, "wb") as fh:
         fh.write(resp.read())
 
+COSIGN_FALLBACK = "3.1.3"   # pinned if the GitHub latest API is unreachable; any v3 works
+
+def _cosign_arch():
+    return {"aarch64": "arm64", "arm64": "arm64", "x86_64": "amd64", "amd64": "amd64"}.get(platform.machine().lower())
+
+def _ensure_cosign():
+    """Returns a cosign executable path, installing it to ~/.local/bin on first use."""
+    p = shutil.which("cosign")
+    if p:
+        return p
+    dest = os.path.expanduser("~/.local/bin/cosign")
+    if os.path.isfile(dest) and os.access(dest, os.X_OK):
+        return dest
+    arch = _cosign_arch()
+    if not arch:
+        return None
+    v = os.environ.get("BEAGLE_COSIGN_VERSION", COSIGN_FALLBACK)
+    url = f"https://github.com/sigstore/cosign/releases/download/v{v}/cosign-linux-{arch}"
+    print(f"verify: installing cosign {v} ({arch}) to {dest}", file=sys.stderr)
+    try:
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        req = urllib.request.Request(url, headers={"User-Agent": "repobeagle"})
+        with urllib.request.urlopen(req, timeout=600) as resp, open(dest + ".part", "wb") as fh:
+            shutil.copyfileobj(resp, fh)
+        os.chmod(dest + ".part", 0o755)
+        os.replace(dest + ".part", dest)   # atomic: never leave a half-written binary on PATH
+    except Exception as ex:
+        print(f"verify: cosign install failed ({str(ex)[:140]})", file=sys.stderr)
+        return None
+    return dest
+
 def cmd_verify(a):
     """Check that a published badge report is authentic and current. Exits 0/1/2."""
     if not ((a.report and a.bundle) or a.target):
         print("verify: give a github repo (slug or URL), or local --report + --bundle files", file=sys.stderr)
         return 1
-    cosign = shutil.which("cosign")
+    cosign = _ensure_cosign()
     if not cosign:
-        print("verify: cosign not found on PATH; install it (https://github.com/sigstore/cosign)", file=sys.stderr)
+        print("verify: could not install cosign; install it manually (https://github.com/sigstore/cosign) or run ./install.sh", file=sys.stderr)
         return 1
     slug = None
     if a.target:

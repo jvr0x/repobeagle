@@ -40,7 +40,13 @@ if ! command -v osv-scanner >/dev/null 2>&1; then
   curl -fsSL -o "$BIN/osv-scanner" "https://github.com/google/osv-scanner/releases/download/v$V/osv-scanner_linux_${OSV_ARCH}" && chmod 0755 "$BIN/osv-scanner"
 fi
 
-# 3) optional host tools for the no-docker fallback
+# 3) cosign on the host (verifies signatures on published badge reports)
+if ! command -v cosign >/dev/null 2>&1 && [[ ! -x "$BIN/cosign" ]]; then
+  V="$(latest sigstore/cosign)"; V="${V:-3.1.3}"; say "installing cosign $V ($OSV_ARCH)"
+  curl -fsSL -o "$BIN/cosign" "https://github.com/sigstore/cosign/releases/download/v$V/cosign-linux-${OSV_ARCH}" && chmod 0755 "$BIN/cosign"
+fi
+
+# 4) optional host tools for the no-docker fallback
 if [[ $LOCAL_TOOLS == 1 ]]; then
   if ! command -v gitleaks >/dev/null 2>&1; then
     V="$(latest gitleaks/gitleaks)"; V="${V:-8.30.1}"; say "installing gitleaks $V ($GL_ARCH)"
@@ -54,7 +60,7 @@ if [[ $LOCAL_TOOLS == 1 ]]; then
   for t in semgrep guarddog bandit; do command -v $t >/dev/null 2>&1 || ln -sf "$PREFIX/venv/bin/$t" "$BIN/$t"; done
 fi
 
-# 4) thin wrapper
+# 5) thin wrapper
 cat > "$BIN/repobeagle" <<WRAP
 #!/usr/bin/env bash
 export BEAGLE_IMAGE="\${BEAGLE_IMAGE:-$IMAGE}"
