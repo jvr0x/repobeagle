@@ -1224,7 +1224,12 @@ def cmd_verify(a):
                            capture_output=True, text=True, timeout=120)
         if r.returncode != 0:
             print("verify: SIGNATURE INVALID", file=sys.stderr)
-            print("\n".join((r.stderr or r.stdout).strip().splitlines()[-3:]), file=sys.stderr)
+            errs, seen, uniq = (r.stderr or r.stdout).strip().splitlines(), set(), []
+            for ln in errs:
+                k = re.sub(r"^(Error: |error during command execution: )+", "", ln.strip())
+                if k and k not in seen:
+                    seen.add(k); uniq.append(ln.strip())
+            print("\n".join(uniq[-3:]) or "(cosign produced no error output)", file=sys.stderr)
             return 1
         try:
             d = json.load(open(report_path, encoding="utf-8"))
