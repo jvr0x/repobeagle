@@ -7,7 +7,7 @@ NEVER executes repository code. Stdlib only (scanners are external binaries).
   repobeagle verify <github-repo> [--branch repobeagle] [--expect-sha SHA]
 """
 import argparse, json, os, platform, re, shutil, subprocess, sys, tempfile, time, unicodedata
-import urllib.request
+import urllib.error, urllib.request
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -1143,6 +1143,20 @@ def _fetch(url, dest):
     with urllib.request.urlopen(req, timeout=30) as resp, open(dest, "wb") as fh:
         fh.write(resp.read())
 
+def _fetch_badge_file(slug, branch, name, dest):
+    """Fetch a badge-branch file via the GitHub contents API: no CDN cache, so no
+    stale/negative-cached copies right after a push. Falls back to raw on 403 (rate limit)."""
+    api = f"https://api.github.com/repos/{slug}/contents/{name}?ref={branch}"
+    req = urllib.request.Request(api, headers={"User-Agent": "repobeagle", "Accept": "application/vnd.github.raw"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp, open(dest, "wb") as fh:
+            fh.write(resp.read())
+        return
+    except urllib.error.HTTPError as ex:
+        if ex.code != 403:
+            raise
+    _fetch(f"https://raw.githubusercontent.com/{slug}/{branch}/{name}", dest)
+
 COSIGN_FALLBACK = "3.1.3"   # pinned if the GitHub latest API is unreachable; any v3 works
 
 def _cosign_arch():
@@ -1198,12 +1212,11 @@ def cmd_verify(a):
         else:
             report_path = os.path.join(work, "report.json")
             bundle_path = os.path.join(work, "report.sigstore.json")
-            base = f"https://raw.githubusercontent.com/{slug}/{a.branch}"
             try:
-                _fetch(f"{base}/report.json", report_path)
-                _fetch(f"{base}/report.sigstore.json", bundle_path)
+                _fetch_badge_file(slug, a.branch, "report.json", report_path)
+                _fetch_badge_file(slug, a.branch, "report.sigstore.json", bundle_path)
             except Exception as ex:
-                print(f"verify: cannot fetch report from {base} ({str(ex)[:140]})", file=sys.stderr)
+                print(f"verify: cannot fetch report from {slug}@{a.branch} ({str(ex)[:140]})", file=sys.stderr)
                 return 1
         r = subprocess.run([cosign, "verify-blob", "--bundle", bundle_path,
                             "--certificate-identity-regexp", a.identity_regexp,
@@ -1219,6 +1232,10 @@ def cmd_verify(a):
             print(f"verify: unreadable report: {ex}", file=sys.stderr)
             return 1
         v, c, meta = d.get("verdict"), d.get("counts", {}), d.get("meta", {})
+        scanned_repo = str(meta.get("scanned_repo", ""))
+        if a.target and scanned_repo and scanned_repo != slug:
+            print(f"verify: REJECTED - report was produced for {scanned_repo}, not {slug}", file=sys.stderr)
+            return 1
         use_color = color_enabled() and not a.no_color
         C = (lambda code, s: f"\033[{code}m{s}\033[0m") if use_color else (lambda code, s: s)
         print(f"repobeagle verify: {a.target or '(local files)'} (branch {a.branch})")
