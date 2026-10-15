@@ -1176,6 +1176,7 @@ def _ensure_cosign():
 
 def cmd_verify(a):
     """Check that a published badge report is authentic and current. Exits 0/1/2."""
+    print(banner(color_enabled(sys.stderr) and not a.no_color), file=sys.stderr)   # stderr keeps stdout reports clean
     if not ((a.report and a.bundle) or a.target):
         print("verify: give a github repo (slug or URL), or local --report + --bundle files", file=sys.stderr)
         return 1
