@@ -11,13 +11,16 @@
 #       permissions:
 #         contents: write   # publishes the badge branch (optional)
 #         statuses: write   # sets the repobeagle/scan commit status (optional)
+#         id-token: write   # keyless-signs the report with Sigstore (optional)
 #       uses: jvr0x/repobeagle/.github/workflows/scan.yml@main
 #       with:
 #         profile: balanced   # strict | balanced | relaxed
 #         fail-on-red: false  # true = the job fails on a RED verdict (PR gate)
 #
-# The badge is self-attested: it lives in this repository and is only as
-# trustworthy as whoever controls the repo. See the README.
+# The badge is self-attested: it lives in this repository. The report is signed
+# with Sigstore keyless signing; the signing identity is THIS workflow file in
+# the jvr0x/repobeagle repo, which callers cannot edit, so a valid signature
+# proves the official pipeline produced the report. See the README.
 name: repobeagle-scan
 on:
   workflow_call:
@@ -51,10 +54,14 @@ on:
 permissions:
   contents: write
   statuses: write
+  id-token: write
 
 jobs:
   scan:
     runs-on: ubuntu-latest
+    env:
+      TOOLS_REF: ${{ inputs.tools-ref }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -68,6 +75,16 @@ jobs:
 
       - name: Install repobeagle (pinned image + osv-scanner)
         run: bash .repobeagle-tools/install.sh
+
+      - name: Record scan environment
+        run: |
+          set -euo pipefail
+          V="$(cat .repobeagle-tools/VERSION)"
+          D="$(docker image inspect "ghcr.io/jvr0x/repobeagle:$V" --format '{{index .RepoDigests 0}}' 2>/dev/null || echo unavailable)"
+          {
+            echo "IMAGE_REF=ghcr.io/jvr0x/repobeagle:$V"
+            echo "IMAGE_DIGEST=$D"
+          } >> "$GITHUB_ENV"
 
       - name: Scan
         id: scan
@@ -92,13 +109,20 @@ jobs:
         env:
           PROFILE: ${{ inputs.profile }}
 
+      - name: Attach provenance to the report
+        run: |
+          python3 -c 'import json,os;d=json.load(open(".repobeagle-out/beagle.json"));m=d.setdefault("meta",{});m.update(image_ref=os.environ["IMAGE_REF"],image_digest=os.environ["IMAGE_DIGEST"],toolchain_ref=os.environ["TOOLS_REF"],run_url=os.environ["RUN_URL"],scanned_repo=os.environ["GITHUB_REPOSITORY"],scanned_sha=os.environ["GITHUB_SHA"]);json.dump(d,open(".repobeagle-out/beagle.json","w"),indent=2)'
+
       - name: Make badge
         run: |
           python3 .repobeagle-tools/tools/make_badge.py .repobeagle-out/beagle.json \
             --endpoint .repobeagle-out/badge.json --svg .repobeagle-out/badge.svg \
-            --link "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/blob/$BADGE_BRANCH/report.json"
-        env:
-          BADGE_BRANCH: ${{ inputs.badge-branch }}
+            --link "$RUN_URL"
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+      - name: Sign the report (keyless)
+        continue-on-error: true            # a missing bundle means "unverified", never "verified"
+        run: cosign sign-blob --yes --bundle .repobeagle-out/report.sigstore.json .repobeagle-out/beagle.json
 
       - name: Publish badge branch
         if: inputs.badge-branch != ''
@@ -121,6 +145,9 @@ jobs:
           cp .repobeagle-out/badge.svg "$W/badge.svg"
           cp .repobeagle-out/beagle.json "$W/report.json"
           cp .repobeagle-out/beagle.json "$W/report-${GITHUB_SHA:0:7}.json"
+          if [ -f .repobeagle-out/report.sigstore.json ]; then
+            cp .repobeagle-out/report.sigstore.json "$W/report.sigstore.json"
+          fi
           if [ "$REF_TYPE" = "tag" ]; then
             cp .repobeagle-out/badge.json "$W/badge-$REF_NAME.json"
             cp .repobeagle-out/beagle.json "$W/report-$REF_NAME.json"
@@ -141,17 +168,11 @@ jobs:
         run: |
           set -euo pipefail
           read -r STATE DESC < <(python3 -c 'import json;d=json.load(open(".repobeagle-out/beagle.json"));c=d["counts"];v=d["verdict"];print({"GREEN":"success","YELLOW":"neutral","RED":"failure"}[v], "RepoBeagle: %s (%s critical / %s high)" % (v, c["critical"], c["high"]))')
-          if [ -n "$BADGE_BRANCH" ]; then
-            gh api "repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" \
-              -f state="$STATE" -f context="repobeagle/scan" -f description="$DESC" \
-              -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/blob/$BADGE_BRANCH/report.json"
-          else
-            gh api "repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" \
-              -f state="$STATE" -f context="repobeagle/scan" -f description="$DESC"
-          fi
+          gh api "repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" \
+            -f state="$STATE" -f context="repobeagle/scan" -f description="$DESC" \
+            -f target_url="$RUN_URL"
         env:
           GH_TOKEN: ${{ github.token }}
-          BADGE_BRANCH: ${{ inputs.badge-branch }}
 
       - name: Fail on RED
         if: inputs.fail-on-red && steps.scan.outputs.rc == '2'

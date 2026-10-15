@@ -79,7 +79,23 @@ Then add the badge; after a tag push, a per-tag badge also exists:
 
 The workflow publishes a `repobeagle` branch containing `badge.json` (shields.io endpoint), a self-hosted `badge.svg` fallback and the full `report.json` (plus `report-<sha>.json` per commit and per-tag copies), so every finding is one click away from the badge. Inputs: `profile`, `fail-on-red`, `badge-branch` (empty string disables publishing), `set-status` (default true) and `tools-ref` (toolchain ref, default `main`; the `VERSION` file there pins the scanned image).
 
-Honest caveat: this badge is self-attested. The files are published to your own repository, so it proves the author runs RepoBeagle and shows the last scan's verdict, not an independent audit.
+### Verifying a badge (public repos)
+
+The badge is produced by the author's own CI, so on its own it is self-attested. The workflow therefore signs the report with Sigstore keyless signing and publishes the bundle as `report.sigstore.json` next to `report.json` on the badge branch. The signing certificate's identity is this repo's own reusable workflow (`jvr0x/repobeagle/.github/workflows/scan.yml`), which callers cannot edit, so a valid signature means the official pipeline scanned that commit and the report was not swapped afterwards. To verify a badge (needs [cosign](https://github.com/sigstore/cosign)):
+
+```bash
+# fetch report.json + report.sigstore.json from the repobeagle branch, then:
+cosign verify-blob \
+  --bundle report.sigstore.json \
+  --certificate-identity-regexp '^https://github\.com/jvr0x/repobeagle/\.github/workflows/scan\.yml@refs/(heads/main|tags/v[0-9]+\.[0-9]+\.[0-9]+)$' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  report.json
+python3 -c 'import json;print(json.load(open("report.json"))["meta"]["scanned_sha"])'   # must match the commit the badge claims
+```
+
+What this does and does not prove:
+- Proven: the official workflow ran and produced exactly this report. The report records `meta.image_digest`, `meta.toolchain_ref`, the run URL and the scanned SHA. The offline scan is deterministic, so anyone can re-run the pinned image on the same commit and diff the findings.
+- Not proven: that the branch tip is still that commit. A repo owner can republish an old, honestly-green report next to new code; always check `meta.scanned_sha` against HEAD. A missing or failing signature means unverified, never verified. Badges also only make sense on public repos: on a private one nobody can see the README or the report. For a fully independent verdict, someone else must run the scan (or a future hosted service).
 
 ## Pipeline
 1. **Fetch** always uses a filtered checkout, so huge repos stay small. It runs `git clone --depth 1 --filter=blob:none --no-checkout --no-recurse-submodules`, lists files with `git ls-tree`, then does a sparse checkout that **excludes archives and binaries**. Those files are reported as findings but never downloaded. For example, DataDog's ~44 GB malware dataset comes down as ~250 MB in about 17 s. The checkout goes into a fresh temp dir (mode 0700), with these protections: `GIT_TERMINAL_PROMPT=0`, `core.hooksPath=/dev/null`, `core.symlinks=false`, `protocol.file.allow=never`, `GIT_ALLOW_PROTOCOL=https:http:ssh`, no credential helper, and LFS smudge skipped. A local directory is copied instead, without `.git`. The copy is deleted at the end unless you pass `--keep`.
